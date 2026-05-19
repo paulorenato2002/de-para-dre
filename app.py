@@ -204,6 +204,56 @@ def montar_quadro_lado_a_lado(df_cont, df_cli):
     return quadro, quadro_export
 
 
+def carregar_parametrizacao_empresa(empresa_id):
+    response = (
+        supabase.table("parametrizacao_contas")
+        .select("id, conta_contabil, fornecedor_cliente")
+        .eq("empresa_id", str(empresa_id))
+        .execute()
+    )
+    df_banco = pd.DataFrame(response.data)
+    if df_banco.empty:
+        df_banco = pd.DataFrame(columns=["id", "conta_contabil", "fornecedor_cliente"])
+    return df_banco
+
+
+def preparar_pendencias_parametrizacao(df_cliente, df_parametros, col_nivel3_cliente, col_conta_cliente, col_fornecedor_cliente=None):
+    if df_cliente is None or df_cliente.empty:
+        return pd.DataFrame(columns=["GRUPO DRE", "CÓD. PLANO 04", "FORNECEDOR", "VALOR", "QTD LANCAMENTOS", "STATUS"])
+
+    df = df_cliente.copy()
+    if "_Nivel_3" not in df.columns and col_nivel3_cliente in df.columns:
+        df["_Nivel_3"] = df[col_nivel3_cliente].apply(normalizar_texto)
+    if "_Nivel_4" not in df.columns and col_conta_cliente in df.columns:
+        df["_Nivel_4"] = df[col_conta_cliente].apply(normalizar_texto)
+    if "_Fornecedor" not in df.columns and col_fornecedor_cliente and col_fornecedor_cliente in df.columns:
+        df["_Fornecedor"] = df[col_fornecedor_cliente].apply(normalizar_texto)
+
+    parametros_existentes = set()
+    if df_parametros is not None and not df_parametros.empty and "fornecedor_cliente" in df_parametros.columns:
+        parametros_existentes = set(df_parametros["fornecedor_cliente"].dropna().astype(str).map(normalizar_texto))
+
+    df["__parametrizado"] = df["_Nivel_4"].isin(parametros_existentes)
+    df_pend = df[~df["__parametrizado"]].copy()
+
+    if df_pend.empty:
+        return pd.DataFrame(columns=["GRUPO DRE", "CÓD. PLANO 04", "FORNECEDOR", "VALOR", "QTD LANCAMENTOS", "STATUS"])
+
+    df_pend["FORNECEDOR"] = df_pend["_Fornecedor"] if "_Fornecedor" in df_pend.columns else df_pend["_Nivel_4"]
+    df_pend["VALOR"] = df_pend["Valor_Tratado"].apply(float)
+    df_pend["STATUS"] = "Sem parametrização"
+
+    df_pend = (
+        df_pend.groupby(["_Nivel_3", "_Nivel_4", "FORNECEDOR"], dropna=False, as_index=False)
+        .agg(QTD_LANCAMENTOS=("FORNECEDOR", "size"), VALOR=("VALOR", "sum"))
+        .rename(columns={"_Nivel_3": "GRUPO DRE", "_Nivel_4": "CÓD. PLANO 04"})
+        .sort_values(["VALOR", "QTD_LANCAMENTOS"], ascending=False)
+    )
+
+    df_pend["STATUS"] = "Sem parametrização"
+    return df_pend
+
+
 def exportar_excel_relatorio(nome_cliente, df_resumo, quadro_export):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -631,9 +681,13 @@ if menu == "Conciliação":
                             "detalhes_por_conta": detalhes_por_conta,
                             "empresa_id": empresa_selecionada,
                             "empresa_nome": EMPRESAS[empresa_selecionada],
+                            "df_cliente": df_cliente,
+                            "df_contabil": df_contabil,
                             "col_conta_contabil": col_conta_contabil,
                             "col_grupo_contabil": col_grupo_contabil,
                             "col_historico_contabil": col_historico_contabil,
+                            "col_nivel3_cliente": col_nivel3_cliente,
+                            "col_conta_cliente": col_conta_cliente,
                             "col_fornecedor_cliente": col_fornecedor_cliente,
                         }
                         st.session_state["analise_conciliacao_assinatura"] = assinatura_atual
@@ -660,57 +714,97 @@ if menu == "Conciliação":
 elif menu == "Parametrização":
     st.title("⚙️ Parametrização da Empresa")
     st.markdown(f"Gerenciando as regras da empresa: **{EMPRESAS[empresa_selecionada]}**")
-    st.caption("Cada linha liga uma Conta Débito do contábil a um código do sistema do cliente.")
+    st.caption("Aqui você consulta o que já foi parametrizado e identifica o que ainda falta vincular no cliente.")
 
-    with st.spinner("Buscando regras no banco..."):
-        response = (
-            supabase.table("parametrizacao_contas")
-            .select("id, conta_contabil, fornecedor_cliente")
-            .eq("empresa_id", str(empresa_selecionada))
-            .execute()
+    df_banco = carregar_parametrizacao_empresa(empresa_selecionada)
+
+    st.subheader("Consulta de Parametrização")
+    st.caption("Conta Débito do contábil x Cód. Plano de conta nº. 04 do cliente.")
+
+    filtro_consulta = st.text_input("Buscar na parametrização", placeholder="Digite conta débito ou código do cliente...")
+    if filtro_consulta:
+        termo = filtro_consulta.strip().lower()
+        mascara = (
+            df_banco["conta_contabil"].astype(str).str.lower().str.contains(termo, na=False)
+            | df_banco["fornecedor_cliente"].astype(str).str.lower().str.contains(termo, na=False)
         )
-        df_banco = pd.DataFrame(response.data)
+        df_banco_visivel = df_banco[mascara].copy()
+    else:
+        df_banco_visivel = df_banco.copy()
 
-    if df_banco.empty:
-        df_banco = pd.DataFrame(columns=["id", "conta_contabil", "fornecedor_cliente"])
-
-    with st.form("form_parametros"):
-        tabela_editada = st.data_editor(
-            df_banco,
-            num_rows="dynamic",
+    if df_banco_visivel.empty:
+        st.info("Nenhuma regra encontrada para o filtro atual.")
+    else:
+        st.dataframe(
+            df_banco_visivel.rename(
+                columns={
+                    "conta_contabil": "CONTA DÉBITO",
+                    "fornecedor_cliente": "CÓD. PLANO 04",
+                }
+            )[["CONTA DÉBITO", "CÓD. PLANO 04"]]
+            .sort_values(["CONTA DÉBITO", "CÓD. PLANO 04"]),
             use_container_width=True,
             hide_index=True,
-            column_config={
-                "id": st.column_config.TextColumn("ID Supabase", disabled=True),
-                "conta_contabil": st.column_config.TextColumn("Conta Débito", required=True),
-                "fornecedor_cliente": st.column_config.TextColumn("Cód. Plano de conta nº. 04", required=True),
-            },
         )
 
-        salvar = st.form_submit_button("💾 Salvar Parametrização da Empresa", type="primary")
+    st.markdown("---")
+    st.subheader("Fornecedores sem parametrização")
+    st.caption("Lista automática dos lançamentos do cliente que ainda não têm de/para cadastrado.")
 
-        if salvar:
-            try:
-                # Remove apenas os registros desta empresa para recriar a base atualizada.
-                for _, row in df_banco.iterrows():
-                    if pd.notna(row["id"]):
-                        supabase.table("parametrizacao_contas").delete().eq("id", row["id"]).execute()
+    fonte_cliente = st.session_state.get("analise_conciliacao", {}).get("df_cliente")
+    col_nivel3_cliente = st.session_state.get("analise_conciliacao", {}).get("col_nivel3_cliente")
+    col_conta_cliente = st.session_state.get("analise_conciliacao", {}).get("col_conta_cliente")
+    col_fornecedor_cliente = st.session_state.get("analise_conciliacao", {}).get("col_fornecedor_cliente")
 
-                novos_dados = []
-                for _, row in tabela_editada.iterrows():
-                    if pd.notna(row["conta_contabil"]) and str(row["conta_contabil"]).strip() != "":
-                        novos_dados.append(
-                            {
-                                "empresa_id": str(empresa_selecionada),
-                                "conta_contabil": str(row["conta_contabil"]).strip(),
-                                "fornecedor_cliente": str(row["fornecedor_cliente"]).strip(),
-                            }
-                        )
+    if fonte_cliente is None or fonte_cliente.empty:
+        st.info(
+            "Para listar os fornecedores sem parametrização, carregue uma base do cliente abaixo ou rode uma conciliação primeiro."
+        )
+        arquivo_cliente_consulta = st.file_uploader(
+            "📂 Upload CLIENTE / DRE para consulta",
+            type=["xlsx", "xls"],
+            key="cliente_consulta_parametrizacao",
+        )
+        if arquivo_cliente_consulta:
+            fonte_cliente = limpar_colunas(pd.read_excel(arquivo_cliente_consulta, engine="openpyxl"))
+            col_nivel3_cliente = obter_coluna(fonte_cliente, ["Plano de conta nº. 03"])
+            col_conta_cliente = obter_coluna(fonte_cliente, ["Cód. Plano de conta nº. 04"])
+            col_fornecedor_cliente = obter_coluna(fonte_cliente, ["Cliente/Fornecedor"])
+            col_valor_cliente = obter_coluna(fonte_cliente, ["Débito"])
+            if col_nivel3_cliente and col_conta_cliente and col_valor_cliente:
+                fonte_cliente["Valor_Tratado"] = fonte_cliente[col_valor_cliente].apply(tratar_valor)
+                fonte_cliente["_Nivel_3"] = fonte_cliente[col_nivel3_cliente].apply(normalizar_texto)
+                fonte_cliente["_Nivel_4"] = fonte_cliente[col_conta_cliente].apply(normalizar_texto)
+                if col_fornecedor_cliente:
+                    fonte_cliente["_Fornecedor"] = fonte_cliente[col_fornecedor_cliente].apply(normalizar_texto)
+            else:
+                st.warning("A base enviada não tem as colunas mínimas esperadas para consulta.")
 
-                if novos_dados:
-                    supabase.table("parametrizacao_contas").insert(novos_dados).execute()
+    if fonte_cliente is not None and not fonte_cliente.empty and col_nivel3_cliente and col_conta_cliente:
+        df_pendencias = preparar_pendencias_parametrizacao(
+            fonte_cliente,
+            df_banco,
+            col_nivel3_cliente,
+            col_conta_cliente,
+            col_fornecedor_cliente,
+        )
 
-                st.success("✅ Regras atualizadas com sucesso!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Erro ao salvar: {e}")
+        if df_pendencias.empty:
+            st.success("Todas as contas/fornecedores dessa base já estão parametrizados.")
+        else:
+            st.dataframe(
+                df_pendencias.rename(
+                    columns={
+                        "GRUPO DRE": "GRUPO DRE",
+                        "CÓD. PLANO 04": "CÓD. PLANO 04",
+                        "FORNECEDOR": "FORNECEDOR",
+                        "VALOR": "VALOR",
+                        "QTD LANCAMENTOS": "QTD LANCAMENTOS",
+                        "STATUS": "STATUS",
+                    }
+                ).style.format({"VALOR": "R$ {:,.2f}"}),
+                use_container_width=True,
+                hide_index=True,
+            )
+    elif fonte_cliente is not None and fonte_cliente.empty:
+        st.warning("Não foi possível montar a lista de pendências porque a base do cliente está vazia.")
