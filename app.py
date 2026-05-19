@@ -14,13 +14,19 @@ st.set_page_config(page_title="Conciliador Contábil", page_icon="📊", layout=
 
 @st.cache_resource
 def init_connection() -> Client:
+    if "SUPABASE_URL" not in st.secrets:
+        st.error("Faltou configurar `SUPABASE_URL` nos secrets do Streamlit Cloud.")
+        st.stop()
+
+    if "SUPABASE_SERVICE_ROLE_KEY" in st.secrets:
+        key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+    elif "SUPABASE_KEY" in st.secrets:
+        key = st.secrets["SUPABASE_KEY"]
+    else:
+        st.error("Faltou configurar `SUPABASE_KEY` ou `SUPABASE_SERVICE_ROLE_KEY` nos secrets do Streamlit Cloud.")
+        st.stop()
+
     url = st.secrets["SUPABASE_URL"]
-    # Usa a service key quando existir para evitar bloqueio por RLS na leitura interna.
-    key = (
-        st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
-        if "SUPABASE_SERVICE_ROLE_KEY" in st.secrets
-        else st.secrets["SUPABASE_KEY"]
-    )
     return create_client(url, key)
 
 

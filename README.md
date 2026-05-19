@@ -24,3 +24,5 @@ Também é necessário configurar os secrets do app com:
 - `SUPABASE_URL`
 - `SUPABASE_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY` opcional, se você quiser usar a service key no backend
+
+Se o app mostrar erro de secret ausente no Streamlit Cloud, abra `Settings` -> `Secrets` e cadastre pelo menos `SUPABASE_URL` e `SUPABASE_KEY`.
