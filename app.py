@@ -162,14 +162,22 @@ def preparar_detalhe_contabil(df_cont_detalhe, col_conta_contabil, col_grupo_con
     df["GRUPO DRE"] = df["_Grupo_Contabil"].apply(normalizar_texto)
     if col_historico_contabil:
         df["HISTORICO"] = df[col_historico_contabil].apply(normalizar_texto)
+        df["FORNECEDOR_COD"] = df[col_historico_contabil].apply(extrair_codigo_inicial)
     else:
         df["HISTORICO"] = ""
+        df["FORNECEDOR_COD"] = ""
     df["CONTA DEB"] = df[col_conta_contabil].apply(normalizar_chave)
     df["VALOR"] = df["Valor_Tratado"].apply(float)
     df["STATUS"] = "Encontrado" if total_ok else "Revisar"
+    df["__CHAVE_FORNECEDOR"] = df["FORNECEDOR_COD"].apply(lambda val: val if val else None)
+    df["__CHAVE_FORNECEDOR"] = df["__CHAVE_FORNECEDOR"].fillna("").astype(str)
+    df["__CHAVE_FORNECEDOR"] = df["__CHAVE_FORNECEDOR"].where(
+        df["__CHAVE_FORNECEDOR"].str.strip().ne(""),
+        "CONTABIL_" + df.index.astype(str),
+    )
 
     df = (
-        df.groupby(["GRUPO DRE", "HISTORICO", "CONTA DEB"], dropna=False, as_index=False)
+        df.groupby(["GRUPO DRE", "HISTORICO", "CONTA DEB", "FORNECEDOR_COD", "__CHAVE_FORNECEDOR"], dropna=False, as_index=False)
         .agg({"VALOR": "sum", "STATUS": "first"})
         .sort_values(["VALOR", "GRUPO DRE", "HISTORICO"], ascending=[False, True, True])
     )
@@ -184,13 +192,24 @@ def preparar_detalhe_cliente(df_cli_detalhe, col_fornecedor_cliente, total_ok):
     df["CÓD. PLANO 04"] = df["_Nivel_4"].apply(normalizar_texto)
     if col_fornecedor_cliente and col_fornecedor_cliente in df.columns:
         df["FORNECEDOR"] = df[col_fornecedor_cliente].apply(normalizar_texto)
+        if "_Fornecedor_Cod" in df.columns:
+            df["FORNECEDOR_COD"] = df["_Fornecedor_Cod"].apply(normalizar_texto)
+        else:
+            df["FORNECEDOR_COD"] = df["FORNECEDOR"].apply(extrair_codigo_inicial)
     else:
         df["FORNECEDOR"] = df["_Nivel_4"].apply(normalizar_texto)
+        df["FORNECEDOR_COD"] = df["FORNECEDOR"].apply(extrair_codigo_inicial)
     df["VALOR"] = df["Valor_Tratado"].apply(float)
     df["STATUS"] = "Encontrado" if total_ok else "Revisar"
+    df["__CHAVE_FORNECEDOR"] = df["FORNECEDOR_COD"].apply(lambda val: val if val else None)
+    df["__CHAVE_FORNECEDOR"] = df["__CHAVE_FORNECEDOR"].fillna("").astype(str)
+    df["__CHAVE_FORNECEDOR"] = df["__CHAVE_FORNECEDOR"].where(
+        df["__CHAVE_FORNECEDOR"].str.strip().ne(""),
+        "CLIENTE_" + df.index.astype(str),
+    )
 
     df = (
-        df.groupby(["CÓD. PLANO 04", "FORNECEDOR"], dropna=False, as_index=False)
+        df.groupby(["CÓD. PLANO 04", "FORNECEDOR", "FORNECEDOR_COD", "__CHAVE_FORNECEDOR"], dropna=False, as_index=False)
         .agg({"VALOR": "sum", "STATUS": "first"})
         .sort_values(["VALOR", "CÓD. PLANO 04", "FORNECEDOR"], ascending=[False, True, True])
     )
@@ -198,43 +217,52 @@ def preparar_detalhe_cliente(df_cli_detalhe, col_fornecedor_cliente, total_ok):
 
 
 def montar_quadro_lado_a_lado(df_cont, df_cli):
-    max_len = max(len(df_cont), len(df_cli), 1)
-    df_cont = df_cont.reindex(range(max_len)).reset_index(drop=True)
-    df_cli = df_cli.reindex(range(max_len)).reset_index(drop=True)
+    cont = df_cont.copy()
+    cli = df_cli.copy()
 
-    cont = pd.DataFrame(
-        {
-            ("CONTABIL", "GRUPO DRE"): df_cont["GRUPO DRE"] if "GRUPO DRE" in df_cont.columns else [""] * max_len,
-            ("CONTABIL", "HISTORICO"): df_cont["HISTORICO"] if "HISTORICO" in df_cont.columns else [""] * max_len,
-            ("CONTABIL", "CONTA DEB"): df_cont["CONTA DEB"] if "CONTA DEB" in df_cont.columns else [""] * max_len,
-            ("CONTABIL", "VALOR"): df_cont["VALOR"] if "VALOR" in df_cont.columns else [0.0] * max_len,
-            ("CONTABIL", "STATUS"): df_cont["STATUS"] if "STATUS" in df_cont.columns else [""] * max_len,
+    if "__CHAVE_FORNECEDOR" not in cont.columns:
+        cont["__CHAVE_FORNECEDOR"] = ""
+    if "__CHAVE_FORNECEDOR" not in cli.columns:
+        cli["__CHAVE_FORNECEDOR"] = ""
+
+    quadro_export = (
+        cont.merge(cli, on="__CHAVE_FORNECEDOR", how="outer", suffixes=("", "_CLIENTE"))
+        .sort_values(
+            by=[col for col in ["GRUPO DRE", "HISTORICO", "CÓD. PLANO 04", "FORNECEDOR"] if col in cont.columns or col in cli.columns],
+            na_position="last",
+        )
+        .reset_index(drop=True)
+    )
+
+    quadro_export = quadro_export[
+        [
+            "GRUPO DRE",
+            "HISTORICO",
+            "CONTA DEB",
+            "VALOR",
+            "STATUS",
+            "CÓD. PLANO 04",
+            "FORNECEDOR",
+            "VALOR_CLIENTE",
+            "STATUS_CLIENTE",
+        ]
+    ].rename(
+        columns={
+            "GRUPO DRE": "CONTABIL - GRUPO DRE",
+            "HISTORICO": "CONTABIL - HISTORICO",
+            "CONTA DEB": "CONTABIL - CONTA DEB",
+            "VALOR": "CONTABIL - VALOR",
+            "STATUS": "CONTABIL - STATUS",
+            "CÓD. PLANO 04": "CLIENTE - CÓD. PLANO 04",
+            "FORNECEDOR": "CLIENTE - FORNECEDOR",
+            "VALOR_CLIENTE": "CLIENTE - VALOR",
+            "STATUS_CLIENTE": "CLIENTE - STATUS",
         }
     )
 
-    cli = pd.DataFrame(
-        {
-            ("CLIENTE", "CÓD. PLANO 04"): df_cli["CÓD. PLANO 04"] if "CÓD. PLANO 04" in df_cli.columns else [""] * max_len,
-            ("CLIENTE", "FORNECEDOR"): df_cli["FORNECEDOR"] if "FORNECEDOR" in df_cli.columns else [""] * max_len,
-            ("CLIENTE", "VALOR"): df_cli["VALOR"] if "VALOR" in df_cli.columns else [0.0] * max_len,
-            ("CLIENTE", "STATUS"): df_cli["STATUS"] if "STATUS" in df_cli.columns else [""] * max_len,
-        }
-    )
-
-    quadro = pd.concat([cont, cli], axis=1)
-    quadro.columns = pd.MultiIndex.from_tuples(quadro.columns)
-    quadro_export = pd.DataFrame(
-        {
-            "CONTABIL - GRUPO DRE": df_cont["GRUPO DRE"] if "GRUPO DRE" in df_cont.columns else [""] * max_len,
-            "CONTABIL - HISTORICO": df_cont["HISTORICO"] if "HISTORICO" in df_cont.columns else [""] * max_len,
-            "CONTABIL - CONTA DEB": df_cont["CONTA DEB"] if "CONTA DEB" in df_cont.columns else [""] * max_len,
-            "CONTABIL - VALOR": df_cont["VALOR"] if "VALOR" in df_cont.columns else [0.0] * max_len,
-            "CONTABIL - STATUS": df_cont["STATUS"] if "STATUS" in df_cont.columns else [""] * max_len,
-            "CLIENTE - CÓD. PLANO 04": df_cli["CÓD. PLANO 04"] if "CÓD. PLANO 04" in df_cli.columns else [""] * max_len,
-            "CLIENTE - FORNECEDOR": df_cli["FORNECEDOR"] if "FORNECEDOR" in df_cli.columns else [""] * max_len,
-            "CLIENTE - VALOR": df_cli["VALOR"] if "VALOR" in df_cli.columns else [0.0] * max_len,
-            "CLIENTE - STATUS": df_cli["STATUS"] if "STATUS" in df_cli.columns else [""] * max_len,
-        }
+    quadro = quadro_export.copy()
+    quadro.columns = pd.MultiIndex.from_tuples(
+        [(col.split(" - ")[0], col.split(" - ")[1]) for col in quadro.columns]
     )
     return quadro, quadro_export
 
@@ -509,6 +537,46 @@ def renderizar_analise_conferencia(analise):
         df_cont_detalhe, col_conta_contabil, col_grupo_contabil, col_historico_contabil, total_ok
     )
     df_cli_rel = preparar_detalhe_cliente(df_cli_detalhe, col_fornecedor_cliente, total_ok)
+
+    if not df_cont_rel.empty and not df_cli_rel.empty:
+        juntar_unicos = lambda serie: " | ".join(
+            [item for item in pd.Series(serie).dropna().astype(str).map(normalizar_texto).unique() if item]
+        )
+        resumo_cont = (
+            df_cont_rel.groupby("FORNECEDOR_COD", dropna=False, as_index=False)
+            .agg({"HISTORICO": juntar_unicos, "VALOR": "sum"})
+            .rename(columns={"VALOR": "VALOR CONTABIL"})
+        )
+        resumo_cli = (
+            df_cli_rel.groupby("FORNECEDOR_COD", dropna=False, as_index=False)
+            .agg({"FORNECEDOR": juntar_unicos, "VALOR": "sum"})
+            .rename(columns={"VALOR": "VALOR CLIENTE"})
+        )
+        resumo_fornecedor = resumo_cont.merge(resumo_cli, on="FORNECEDOR_COD", how="outer")
+        resumo_fornecedor["DIFERENÇA"] = (
+            resumo_fornecedor["VALOR CONTABIL"].fillna(0) - resumo_fornecedor["VALOR CLIENTE"].fillna(0)
+        )
+        resumo_fornecedor["STATUS"] = resumo_fornecedor["DIFERENÇA"].apply(
+            lambda val: "🟢 Bateu" if abs(float(val)) <= 0.01 else "🔴 Divergente"
+        )
+        resumo_fornecedor = resumo_fornecedor[
+            ["FORNECEDOR_COD", "HISTORICO", "VALOR CONTABIL", "FORNECEDOR", "VALOR CLIENTE", "DIFERENÇA", "STATUS"]
+        ].sort_values(["VALOR CONTABIL", "FORNECEDOR_COD"], ascending=[False, True])
+
+        st.subheader("Resumo do grupo superior")
+        st.caption("Aqui a comparação acontece entre o histórico do contábil e o fornecedor do cliente.")
+        st.dataframe(
+            resumo_fornecedor.style.format(
+                {
+                    "VALOR CONTABIL": "R$ {:,.2f}",
+                    "VALOR CLIENTE": "R$ {:,.2f}",
+                    "DIFERENÇA": "R$ {:,.2f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
     quadro_display, quadro_export = montar_quadro_lado_a_lado(df_cont_rel, df_cli_rel)
 
     st.dataframe(
