@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
 from io import BytesIO
+import re
 
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -82,6 +83,23 @@ def normalizar_chave(val):
     if texto.endswith(".0"):
         texto = texto[:-2]
     return texto
+
+
+def extrair_codigo_inicial(val):
+    texto = normalizar_texto(val)
+    if not texto:
+        return ""
+    match = re.match(r"^\s*(\d+)", texto)
+    return match.group(1) if match else ""
+
+
+def normalizar_chave_relacionamento(val):
+    texto = normalizar_texto(val).lower()
+    if not texto:
+        return ""
+    texto = re.sub(r"\s+", " ", texto)
+    texto = re.sub(r"\s*-\s*", " - ", texto)
+    return texto.strip()
 
 
 def limpar_colunas(df):
@@ -231,9 +249,11 @@ def preparar_pendencias_parametrizacao(df_cliente, df_parametros, col_nivel3_cli
 
     parametros_existentes = set()
     if df_parametros is not None and not df_parametros.empty and "fornecedor_cliente" in df_parametros.columns:
-        parametros_existentes = set(df_parametros["fornecedor_cliente"].dropna().astype(str).map(normalizar_texto))
+        parametros_existentes = set(
+            df_parametros["fornecedor_cliente"].dropna().astype(str).map(normalizar_chave_relacionamento)
+        )
 
-    df["__parametrizado"] = df["_Nivel_4"].isin(parametros_existentes)
+    df["__parametrizado"] = df["_Nivel_4"].apply(normalizar_chave_relacionamento).isin(parametros_existentes)
     df_pend = df[~df["__parametrizado"]].copy()
 
     if df_pend.empty:
@@ -571,8 +591,10 @@ if menu == "Conciliação":
                     df_cliente["Valor_Tratado"] = df_cliente[col_valor_cliente].apply(tratar_valor)
                     df_cliente["_Nivel_3"] = df_cliente[col_nivel3_cliente].apply(normalizar_texto)
                     df_cliente["_Nivel_4"] = df_cliente[col_conta_cliente].apply(normalizar_texto)
+                    df_cliente["_Nivel_4_Norm"] = df_cliente["_Nivel_4"].apply(normalizar_chave_relacionamento)
                     if col_fornecedor_cliente:
                         df_cliente["_Fornecedor"] = df_cliente[col_fornecedor_cliente].apply(normalizar_texto)
+                        df_cliente["_Fornecedor_Cod"] = df_cliente["_Fornecedor"].apply(extrair_codigo_inicial)
 
                     # Puxar Parametrização da empresa selecionada
                     response = (
@@ -593,7 +615,9 @@ if menu == "Conciliação":
                             raise ValueError("A tabela parametrizacao_contas precisa ter as colunas conta_contabil e fornecedor_cliente.")
 
                         df_parametros["conta_contabil"] = df_parametros["conta_contabil"].apply(normalizar_chave)
-                        df_parametros["fornecedor_cliente"] = df_parametros["fornecedor_cliente"].apply(normalizar_texto)
+                        df_parametros["fornecedor_cliente"] = df_parametros["fornecedor_cliente"].apply(
+                            normalizar_chave_relacionamento
+                        )
 
                         # Agrupar Contábil por Conta Contábil
                         df_cont_grp = (
@@ -644,8 +668,18 @@ if menu == "Conciliação":
                                     "cliente": pd.DataFrame(),
                                 }
                             else:
-                                lista_fornecedores = regras["fornecedor_cliente"].tolist()
-                                filtro_cli = df_cliente["_Nivel_4"].isin(lista_fornecedores)
+                                lista_fornecedores = set(regras["fornecedor_cliente"].tolist())
+                                codigos_historico = set()
+                                if col_historico_contabil and col_historico_contabil in df_cont_detalhe.columns:
+                                    codigos_historico = set(
+                                        df_cont_detalhe[col_historico_contabil].dropna().apply(extrair_codigo_inicial)
+                                    )
+                                    codigos_historico.discard("")
+
+                                filtro_cli = df_cliente["_Nivel_4_Norm"].isin(lista_fornecedores)
+                                if codigos_historico and "_Fornecedor_Cod" in df_cliente.columns:
+                                    filtro_cli = filtro_cli | df_cliente["_Fornecedor_Cod"].isin(codigos_historico)
+
                                 df_cli_match = df_cliente[filtro_cli].copy()
 
                                 valor_cliente = round(df_cli_match["Valor_Tratado"].sum(), 2)
