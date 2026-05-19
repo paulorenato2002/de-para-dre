@@ -748,6 +748,99 @@ elif menu == "Parametrização":
         )
 
     st.markdown("---")
+    st.subheader("Editar ou excluir parametrizações")
+    st.caption("Altere a conta débito, marque a linha para excluir ou adicione novas linhas diretamente na tabela.")
+
+    df_gerenciar = df_banco.copy()
+    if df_gerenciar.empty:
+        df_gerenciar = pd.DataFrame(columns=["id", "conta_contabil", "fornecedor_cliente", "EXCLUIR"])
+    else:
+        df_gerenciar["EXCLUIR"] = False
+
+    with st.form("form_gerenciar_parametrizacao"):
+        tabela_gerenciar = st.data_editor(
+            df_gerenciar,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "id": st.column_config.TextColumn("ID Supabase", disabled=True),
+                "conta_contabil": st.column_config.TextColumn("Conta Débito", required=True),
+                "fornecedor_cliente": st.column_config.TextColumn("Cód. Plano de conta nº. 04", required=True),
+                "EXCLUIR": st.column_config.CheckboxColumn("Excluir", help="Marque para remover este vínculo."),
+            },
+        )
+
+        salvar_gerenciamento = st.form_submit_button("💾 Salvar alterações da parametrização", type="primary")
+
+        if salvar_gerenciamento:
+            try:
+                dados_salvar = []
+                ids_excluir = []
+                vistos = set()
+
+                for _, row in tabela_gerenciar.iterrows():
+                    row_id = row.get("id")
+                    excluir = bool(row.get("EXCLUIR", False))
+                    conta = normalizar_chave(row.get("conta_contabil", ""))
+                    fornecedor = normalizar_texto(row.get("fornecedor_cliente", ""))
+
+                    if pd.notna(row_id):
+                        row_id = str(row_id)
+
+                    if excluir:
+                        if row_id:
+                            ids_excluir.append(row_id)
+                        elif fornecedor:
+                            ids_excluir.append(f"{empresa_selecionada}:{fornecedor}")
+                        continue
+
+                    if not conta or not fornecedor:
+                        continue
+
+                    chave = (str(empresa_selecionada), fornecedor)
+                    if chave in vistos:
+                        continue
+                    vistos.add(chave)
+
+                    dados_salvar.append(
+                        {
+                            "empresa_id": str(empresa_selecionada),
+                            "conta_contabil": conta,
+                            "fornecedor_cliente": fornecedor,
+                        }
+                    )
+
+                for item in ids_excluir:
+                    if ":" in item:
+                        _, fornecedor = item.split(":", 1)
+                        supabase.table("parametrizacao_contas").delete() \
+                            .eq("empresa_id", str(empresa_selecionada)) \
+                            .eq("fornecedor_cliente", fornecedor) \
+                            .execute()
+                    else:
+                        supabase.table("parametrizacao_contas").delete().eq("id", item).execute()
+
+                if dados_salvar:
+                    try:
+                        supabase.table("parametrizacao_contas").upsert(
+                            dados_salvar,
+                            on_conflict="empresa_id,fornecedor_cliente",
+                        ).execute()
+                    except Exception:
+                        for item in dados_salvar:
+                            supabase.table("parametrizacao_contas").delete() \
+                                .eq("empresa_id", item["empresa_id"]) \
+                                .eq("fornecedor_cliente", item["fornecedor_cliente"]) \
+                                .execute()
+                        supabase.table("parametrizacao_contas").insert(dados_salvar).execute()
+
+                st.success("✅ Parametrizações atualizadas com sucesso!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao atualizar parametrizações: {e}")
+
+    st.markdown("---")
     st.subheader("Fornecedores sem parametrização")
     st.caption("Lista automática dos lançamentos do cliente que ainda não têm de/para cadastrado.")
 
