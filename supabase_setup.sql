@@ -18,6 +18,9 @@ create table if not exists public.parametrizacao_contas (
 create index if not exists idx_parametrizacao_contas_empresa_conta
     on public.parametrizacao_contas (empresa_id, conta_contabil);
 
+create unique index if not exists idx_parametrizacao_contas_empresa_fornecedor_unique
+    on public.parametrizacao_contas (empresa_id, fornecedor_cliente);
+
 insert into public.empresas (id, nome, ativo) values
     ('401', '401 - SST', true),
     ('370', '370 - STI', true),

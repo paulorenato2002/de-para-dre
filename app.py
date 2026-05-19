@@ -834,11 +834,6 @@ elif menu == "Parametrização":
                                 continue
                             vistos.add(chave)
 
-                            supabase.table("parametrizacao_contas").delete() \
-                                .eq("empresa_id", str(empresa_selecionada)) \
-                                .eq("fornecedor_cliente", fornecedor) \
-                                .execute()
-
                             novos_dados.append(
                                 {
                                     "empresa_id": str(empresa_selecionada),
@@ -848,7 +843,18 @@ elif menu == "Parametrização":
                             )
 
                         if novos_dados:
-                            supabase.table("parametrizacao_contas").insert(novos_dados).execute()
+                            try:
+                                supabase.table("parametrizacao_contas").upsert(
+                                    novos_dados,
+                                    on_conflict="empresa_id,fornecedor_cliente",
+                                ).execute()
+                            except Exception:
+                                for item in novos_dados:
+                                    supabase.table("parametrizacao_contas").delete() \
+                                        .eq("empresa_id", item["empresa_id"]) \
+                                        .eq("fornecedor_cliente", item["fornecedor_cliente"]) \
+                                        .execute()
+                                supabase.table("parametrizacao_contas").insert(novos_dados).execute()
 
                         st.success("✅ Parametrizações salvas com sucesso!")
                         st.rerun()
