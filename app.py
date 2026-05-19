@@ -102,21 +102,45 @@ def normalizar_chave_relacionamento(val):
     return texto.strip()
 
 
-def linha_contem_receita(linha, colunas):
-    for coluna in colunas:
-        if coluna in linha.index:
-            texto = normalizar_texto(linha[coluna]).lower()
-            if "receita" in texto:
-                return True
-    return False
+def aplicar_filtros_cliente(df, col_plano_01, col_nivel4):
+    if df is None or df.empty:
+        return df
+
+    df_filtrado = df.copy()
+    if col_plano_01 and col_plano_01 in df_filtrado.columns:
+        valores_plano_01 = df_filtrado[col_plano_01].apply(normalizar_texto).str.upper()
+        df_filtrado = df_filtrado[valores_plano_01 != "1 -RECEITAS"]
+
+    if col_nivel4 and col_nivel4 in df_filtrado.columns:
+        excluidos_nivel4 = {
+            normalizar_chave_relacionamento("2.07.019.003 - TAXA BANCARIA BOLETOS"),
+            normalizar_chave_relacionamento("3.02.002.001 - JUROS DE MORA"),
+        }
+        nivel4_norm = df_filtrado[col_nivel4].apply(normalizar_chave_relacionamento)
+        df_filtrado = df_filtrado[~nivel4_norm.isin(excluidos_nivel4)]
+
+    return df_filtrado.copy()
 
 
-def filtrar_receitas_df(df, colunas):
-    if df is None or df.empty or not colunas:
-        return df.copy() if df is not None else df
-    df = df.copy()
-    mask = df.apply(lambda linha: linha_contem_receita(linha, colunas), axis=1)
-    return df[~mask].copy()
+def aplicar_filtros_contabil(df, col_grupo_contabil, col_tipo_lan):
+    if df is None or df.empty:
+        return df
+
+    df_filtrado = df.copy()
+    if col_tipo_lan and col_tipo_lan in df_filtrado.columns:
+        tipos = df_filtrado[col_tipo_lan].apply(normalizar_texto).str.upper()
+        df_filtrado = df_filtrado[tipos == "D"]
+
+    if col_grupo_contabil and col_grupo_contabil in df_filtrado.columns:
+        grupos_excluidos = {
+            "TARIFAS BANCARIAS/COBRANCAS",
+            "JUROS SOBRE EMPRÉSTIMOS E FINANCIAMENTOS",
+            "DEPRECIAÇÕES E AMORTIZAÇÕES",
+        }
+        grupos = df_filtrado[col_grupo_contabil].apply(normalizar_texto).str.upper()
+        df_filtrado = df_filtrado[~grupos.isin(grupos_excluidos)]
+
+    return df_filtrado.copy()
 
 
 def limpar_colunas(df):
@@ -162,22 +186,14 @@ def preparar_detalhe_contabil(df_cont_detalhe, col_conta_contabil, col_grupo_con
     df["GRUPO DRE"] = df["_Grupo_Contabil"].apply(normalizar_texto)
     if col_historico_contabil:
         df["HISTORICO"] = df[col_historico_contabil].apply(normalizar_texto)
-        df["FORNECEDOR_COD"] = df[col_historico_contabil].apply(extrair_codigo_inicial)
     else:
         df["HISTORICO"] = ""
-        df["FORNECEDOR_COD"] = ""
     df["CONTA DEB"] = df[col_conta_contabil].apply(normalizar_chave)
     df["VALOR"] = df["Valor_Tratado"].apply(float)
     df["STATUS"] = "Encontrado" if total_ok else "Revisar"
-    df["__CHAVE_FORNECEDOR"] = df["FORNECEDOR_COD"].apply(lambda val: val if val else None)
-    df["__CHAVE_FORNECEDOR"] = df["__CHAVE_FORNECEDOR"].fillna("").astype(str)
-    df["__CHAVE_FORNECEDOR"] = df["__CHAVE_FORNECEDOR"].where(
-        df["__CHAVE_FORNECEDOR"].str.strip().ne(""),
-        "CONTABIL_" + df.index.astype(str),
-    )
 
     df = (
-        df.groupby(["GRUPO DRE", "HISTORICO", "CONTA DEB", "FORNECEDOR_COD", "__CHAVE_FORNECEDOR"], dropna=False, as_index=False)
+        df.groupby(["GRUPO DRE", "HISTORICO", "CONTA DEB"], dropna=False, as_index=False)
         .agg({"VALOR": "sum", "STATUS": "first"})
         .sort_values(["VALOR", "GRUPO DRE", "HISTORICO"], ascending=[False, True, True])
     )
@@ -192,24 +208,13 @@ def preparar_detalhe_cliente(df_cli_detalhe, col_fornecedor_cliente, total_ok):
     df["CÓD. PLANO 04"] = df["_Nivel_4"].apply(normalizar_texto)
     if col_fornecedor_cliente and col_fornecedor_cliente in df.columns:
         df["FORNECEDOR"] = df[col_fornecedor_cliente].apply(normalizar_texto)
-        if "_Fornecedor_Cod" in df.columns:
-            df["FORNECEDOR_COD"] = df["_Fornecedor_Cod"].apply(normalizar_texto)
-        else:
-            df["FORNECEDOR_COD"] = df["FORNECEDOR"].apply(extrair_codigo_inicial)
     else:
         df["FORNECEDOR"] = df["_Nivel_4"].apply(normalizar_texto)
-        df["FORNECEDOR_COD"] = df["FORNECEDOR"].apply(extrair_codigo_inicial)
     df["VALOR"] = df["Valor_Tratado"].apply(float)
     df["STATUS"] = "Encontrado" if total_ok else "Revisar"
-    df["__CHAVE_FORNECEDOR"] = df["FORNECEDOR_COD"].apply(lambda val: val if val else None)
-    df["__CHAVE_FORNECEDOR"] = df["__CHAVE_FORNECEDOR"].fillna("").astype(str)
-    df["__CHAVE_FORNECEDOR"] = df["__CHAVE_FORNECEDOR"].where(
-        df["__CHAVE_FORNECEDOR"].str.strip().ne(""),
-        "CLIENTE_" + df.index.astype(str),
-    )
 
     df = (
-        df.groupby(["CÓD. PLANO 04", "FORNECEDOR", "FORNECEDOR_COD", "__CHAVE_FORNECEDOR"], dropna=False, as_index=False)
+        df.groupby(["CÓD. PLANO 04", "FORNECEDOR"], dropna=False, as_index=False)
         .agg({"VALOR": "sum", "STATUS": "first"})
         .sort_values(["VALOR", "CÓD. PLANO 04", "FORNECEDOR"], ascending=[False, True, True])
     )
@@ -217,53 +222,26 @@ def preparar_detalhe_cliente(df_cli_detalhe, col_fornecedor_cliente, total_ok):
 
 
 def montar_quadro_lado_a_lado(df_cont, df_cli):
-    cont = df_cont.copy()
-    cli = df_cli.copy()
+    max_len = max(len(df_cont), len(df_cli), 1)
+    df_cont = df_cont.reset_index(drop=True).reindex(range(max_len))
+    df_cli = df_cli.reset_index(drop=True).reindex(range(max_len))
 
-    if "__CHAVE_FORNECEDOR" not in cont.columns:
-        cont["__CHAVE_FORNECEDOR"] = ""
-    if "__CHAVE_FORNECEDOR" not in cli.columns:
-        cli["__CHAVE_FORNECEDOR"] = ""
-
-    quadro_export = (
-        cont.merge(cli, on="__CHAVE_FORNECEDOR", how="outer", suffixes=("", "_CLIENTE"))
-        .sort_values(
-            by=[col for col in ["GRUPO DRE", "HISTORICO", "CÓD. PLANO 04", "FORNECEDOR"] if col in cont.columns or col in cli.columns],
-            na_position="last",
-        )
-        .reset_index(drop=True)
-    )
-
-    quadro_export = quadro_export[
-        [
-            "GRUPO DRE",
-            "HISTORICO",
-            "CONTA DEB",
-            "VALOR",
-            "STATUS",
-            "CÓD. PLANO 04",
-            "FORNECEDOR",
-            "VALOR_CLIENTE",
-            "STATUS_CLIENTE",
-        ]
-    ].rename(
-        columns={
-            "GRUPO DRE": "CONTABIL - GRUPO DRE",
-            "HISTORICO": "CONTABIL - HISTORICO",
-            "CONTA DEB": "CONTABIL - CONTA DEB",
-            "VALOR": "CONTABIL - VALOR",
-            "STATUS": "CONTABIL - STATUS",
-            "CÓD. PLANO 04": "CLIENTE - CÓD. PLANO 04",
-            "FORNECEDOR": "CLIENTE - FORNECEDOR",
-            "VALOR_CLIENTE": "CLIENTE - VALOR",
-            "STATUS_CLIENTE": "CLIENTE - STATUS",
+    quadro_export = pd.DataFrame(
+        {
+            "CONTABIL - GRUPO DRE": df_cont["GRUPO DRE"] if "GRUPO DRE" in df_cont.columns else [""] * max_len,
+            "CONTABIL - HISTORICO": df_cont["HISTORICO"] if "HISTORICO" in df_cont.columns else [""] * max_len,
+            "CONTABIL - CONTA DEB": df_cont["CONTA DEB"] if "CONTA DEB" in df_cont.columns else [""] * max_len,
+            "CONTABIL - VALOR": df_cont["VALOR"] if "VALOR" in df_cont.columns else [0.0] * max_len,
+            "CONTABIL - STATUS": df_cont["STATUS"] if "STATUS" in df_cont.columns else [""] * max_len,
+            "CLIENTE - CÓD. PLANO 04": df_cli["CÓD. PLANO 04"] if "CÓD. PLANO 04" in df_cli.columns else [""] * max_len,
+            "CLIENTE - FORNECEDOR": df_cli["FORNECEDOR"] if "FORNECEDOR" in df_cli.columns else [""] * max_len,
+            "CLIENTE - VALOR": df_cli["VALOR"] if "VALOR" in df_cli.columns else [0.0] * max_len,
+            "CLIENTE - STATUS": df_cli["STATUS"] if "STATUS" in df_cli.columns else [""] * max_len,
         }
     )
 
     quadro = quadro_export.copy()
-    quadro.columns = pd.MultiIndex.from_tuples(
-        [(col.split(" - ")[0], col.split(" - ")[1]) for col in quadro.columns]
-    )
+    quadro.columns = pd.MultiIndex.from_tuples([tuple(col.split(" - ", 1)) for col in quadro.columns])
     return quadro, quadro_export
 
 
@@ -300,9 +278,6 @@ def preparar_pendencias_parametrizacao(
         df["_Fornecedor"] = df[col_fornecedor_cliente].apply(normalizar_texto)
     if col_descricao_cliente and col_descricao_cliente in df.columns and "_Descricao" not in df.columns:
         df["_Descricao"] = df[col_descricao_cliente].apply(normalizar_texto)
-
-    colunas_receita = [coluna for coluna in ["_Nivel_3", "_Nivel_4", "_Fornecedor", "_Descricao"] if coluna in df.columns]
-    df = filtrar_receitas_df(df, colunas_receita)
 
     parametros_existentes = set()
     if df_parametros is not None and not df_parametros.empty and "fornecedor_cliente" in df_parametros.columns:
@@ -537,46 +512,6 @@ def renderizar_analise_conferencia(analise):
         df_cont_detalhe, col_conta_contabil, col_grupo_contabil, col_historico_contabil, total_ok
     )
     df_cli_rel = preparar_detalhe_cliente(df_cli_detalhe, col_fornecedor_cliente, total_ok)
-
-    if not df_cont_rel.empty and not df_cli_rel.empty:
-        juntar_unicos = lambda serie: " | ".join(
-            [item for item in pd.Series(serie).dropna().astype(str).map(normalizar_texto).unique() if item]
-        )
-        resumo_cont = (
-            df_cont_rel.groupby("FORNECEDOR_COD", dropna=False, as_index=False)
-            .agg({"HISTORICO": juntar_unicos, "VALOR": "sum"})
-            .rename(columns={"VALOR": "VALOR CONTABIL"})
-        )
-        resumo_cli = (
-            df_cli_rel.groupby("FORNECEDOR_COD", dropna=False, as_index=False)
-            .agg({"FORNECEDOR": juntar_unicos, "VALOR": "sum"})
-            .rename(columns={"VALOR": "VALOR CLIENTE"})
-        )
-        resumo_fornecedor = resumo_cont.merge(resumo_cli, on="FORNECEDOR_COD", how="outer")
-        resumo_fornecedor["DIFERENÇA"] = (
-            resumo_fornecedor["VALOR CONTABIL"].fillna(0) - resumo_fornecedor["VALOR CLIENTE"].fillna(0)
-        )
-        resumo_fornecedor["STATUS"] = resumo_fornecedor["DIFERENÇA"].apply(
-            lambda val: "🟢 Bateu" if abs(float(val)) <= 0.01 else "🔴 Divergente"
-        )
-        resumo_fornecedor = resumo_fornecedor[
-            ["FORNECEDOR_COD", "HISTORICO", "VALOR CONTABIL", "FORNECEDOR", "VALOR CLIENTE", "DIFERENÇA", "STATUS"]
-        ].sort_values(["VALOR CONTABIL", "FORNECEDOR_COD"], ascending=[False, True])
-
-        st.subheader("Resumo do grupo superior")
-        st.caption("Aqui a comparação acontece entre o histórico do contábil e o fornecedor do cliente.")
-        st.dataframe(
-            resumo_fornecedor.style.format(
-                {
-                    "VALOR CONTABIL": "R$ {:,.2f}",
-                    "VALOR CLIENTE": "R$ {:,.2f}",
-                    "DIFERENÇA": "R$ {:,.2f}",
-                }
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
     quadro_display, quadro_export = montar_quadro_lado_a_lado(df_cont_rel, df_cli_rel)
 
     st.dataframe(
@@ -653,7 +588,9 @@ if menu == "Conciliação":
                     col_valor_contabil = obter_coluna(df_contabil, ["valdeb"])
                     col_data_contabil = obter_coluna(df_contabil, ["datalan"])
                     col_historico_contabil = obter_coluna(df_contabil, ["historico_excel", "historico"])
+                    col_tipo_lan_contabil = obter_coluna(df_contabil, ["tipo_lan"])
 
+                    col_plano_01_cliente = obter_coluna(df_cliente, ["Plano de conta nº. 01"])
                     col_conta_cliente = obter_coluna(df_cliente, ["Cód. Plano de conta nº. 04"])
                     col_nivel3_cliente = obter_coluna(df_cliente, ["Plano de conta nº. 03"])
                     col_valor_cliente = obter_coluna(df_cliente, ["Débito"])
@@ -691,24 +628,16 @@ if menu == "Conciliação":
                     df_cliente["_Nivel_4_Norm"] = df_cliente["_Nivel_4"].apply(normalizar_chave_relacionamento)
                     if col_fornecedor_cliente:
                         df_cliente["_Fornecedor"] = df_cliente[col_fornecedor_cliente].apply(normalizar_texto)
-                        df_cliente["_Fornecedor_Cod"] = df_cliente["_Fornecedor"].apply(extrair_codigo_inicial)
-
-                    colunas_receita_contabil = [coluna for coluna in [col_grupo_contabil, col_historico_contabil, col_conta_contabil] if coluna]
-                    colunas_receita_cliente = [
-                        coluna
-                        for coluna in [col_nivel3_cliente, col_conta_cliente, col_descricao_cliente, col_fornecedor_cliente]
-                        if coluna
-                    ]
 
                     antes_contabil = len(df_contabil)
                     antes_cliente = len(df_cliente)
-                    df_contabil = filtrar_receitas_df(df_contabil, colunas_receita_contabil)
-                    df_cliente = filtrar_receitas_df(df_cliente, colunas_receita_cliente)
+                    df_contabil = aplicar_filtros_contabil(df_contabil, col_grupo_contabil, col_tipo_lan_contabil)
+                    df_cliente = aplicar_filtros_cliente(df_cliente, col_plano_01_cliente, col_conta_cliente)
                     removidos_contabil = antes_contabil - len(df_contabil)
                     removidos_cliente = antes_cliente - len(df_cliente)
                     if removidos_contabil or removidos_cliente:
                         st.info(
-                            f"Linhas de receita ignoradas nesta análise: {removidos_contabil} no contábil e {removidos_cliente} no cliente."
+                            f"Linhas desconsideradas nesta análise: {removidos_contabil} no contábil e {removidos_cliente} no cliente."
                         )
 
                     # Puxar Parametrização da empresa selecionada
@@ -784,17 +713,7 @@ if menu == "Conciliação":
                                 }
                             else:
                                 lista_fornecedores = set(regras["fornecedor_cliente"].tolist())
-                                codigos_historico = set()
-                                if col_historico_contabil and col_historico_contabil in df_cont_detalhe.columns:
-                                    codigos_historico = set(
-                                        df_cont_detalhe[col_historico_contabil].dropna().apply(extrair_codigo_inicial)
-                                    )
-                                    codigos_historico.discard("")
-
                                 filtro_cli = df_cliente["_Nivel_4_Norm"].isin(lista_fornecedores)
-                                if codigos_historico and "_Fornecedor_Cod" in df_cliente.columns:
-                                    filtro_cli = filtro_cli | df_cliente["_Fornecedor_Cod"].isin(codigos_historico)
-
                                 df_cli_match = df_cliente[filtro_cli].copy()
 
                                 valor_cliente = round(df_cli_match["Valor_Tratado"].sum(), 2)
@@ -1011,12 +930,14 @@ elif menu == "Parametrização":
         )
         if arquivo_cliente_consulta:
             fonte_cliente = limpar_colunas(pd.read_excel(arquivo_cliente_consulta, engine="openpyxl"))
+            col_plano_01_cliente = obter_coluna(fonte_cliente, ["Plano de conta nº. 01"])
             col_nivel3_cliente = obter_coluna(fonte_cliente, ["Plano de conta nº. 03"])
             col_conta_cliente = obter_coluna(fonte_cliente, ["Cód. Plano de conta nº. 04"])
             col_fornecedor_cliente = obter_coluna(fonte_cliente, ["Cliente/Fornecedor"])
             col_descricao_cliente = obter_coluna(fonte_cliente, ["Descrição"])
             col_valor_cliente = obter_coluna(fonte_cliente, ["Débito"])
             if col_nivel3_cliente and col_conta_cliente and col_valor_cliente:
+                fonte_cliente = aplicar_filtros_cliente(fonte_cliente, col_plano_01_cliente, col_conta_cliente)
                 fonte_cliente["Valor_Tratado"] = fonte_cliente[col_valor_cliente].apply(tratar_valor)
                 fonte_cliente["_Nivel_3"] = fonte_cliente[col_nivel3_cliente].apply(normalizar_texto)
                 fonte_cliente["_Nivel_4"] = fonte_cliente[col_conta_cliente].apply(normalizar_texto)
