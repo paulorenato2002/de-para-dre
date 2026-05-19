@@ -143,10 +143,10 @@ def preparar_detalhe_contabil(df_cont_detalhe, col_conta_contabil, col_grupo_con
 
 def preparar_detalhe_cliente(df_cli_detalhe, col_fornecedor_cliente, total_ok):
     if df_cli_detalhe.empty:
-        return pd.DataFrame(columns=["GRUPO DRE", "FORNECEDOR", "VALOR", "STATUS"])
+        return pd.DataFrame(columns=["CÓD. PLANO 04", "FORNECEDOR", "VALOR", "STATUS"])
 
     df = df_cli_detalhe.copy()
-    df["GRUPO DRE"] = df["_Nivel_3"].apply(normalizar_texto)
+    df["CÓD. PLANO 04"] = df["_Nivel_4"].apply(normalizar_texto)
     if col_fornecedor_cliente and col_fornecedor_cliente in df.columns:
         df["FORNECEDOR"] = df[col_fornecedor_cliente].apply(normalizar_texto)
     else:
@@ -155,9 +155,9 @@ def preparar_detalhe_cliente(df_cli_detalhe, col_fornecedor_cliente, total_ok):
     df["STATUS"] = "Encontrado" if total_ok else "Revisar"
 
     df = (
-        df.groupby(["GRUPO DRE", "FORNECEDOR"], dropna=False, as_index=False)
+        df.groupby(["CÓD. PLANO 04", "FORNECEDOR"], dropna=False, as_index=False)
         .agg({"VALOR": "sum", "STATUS": "first"})
-        .sort_values(["VALOR", "GRUPO DRE", "FORNECEDOR"], ascending=[False, True, True])
+        .sort_values(["VALOR", "CÓD. PLANO 04", "FORNECEDOR"], ascending=[False, True, True])
     )
     return df
 
@@ -179,7 +179,7 @@ def montar_quadro_lado_a_lado(df_cont, df_cli):
 
     cli = pd.DataFrame(
         {
-            ("CLIENTE", "GRUPO DRE"): df_cli["GRUPO DRE"] if "GRUPO DRE" in df_cli.columns else [""] * max_len,
+            ("CLIENTE", "CÓD. PLANO 04"): df_cli["CÓD. PLANO 04"] if "CÓD. PLANO 04" in df_cli.columns else [""] * max_len,
             ("CLIENTE", "FORNECEDOR"): df_cli["FORNECEDOR"] if "FORNECEDOR" in df_cli.columns else [""] * max_len,
             ("CLIENTE", "VALOR"): df_cli["VALOR"] if "VALOR" in df_cli.columns else [0.0] * max_len,
             ("CLIENTE", "STATUS"): df_cli["STATUS"] if "STATUS" in df_cli.columns else [""] * max_len,
@@ -195,7 +195,7 @@ def montar_quadro_lado_a_lado(df_cont, df_cli):
             "CONTABIL - CONTA DEB": df_cont["CONTA DEB"] if "CONTA DEB" in df_cont.columns else [""] * max_len,
             "CONTABIL - VALOR": df_cont["VALOR"] if "VALOR" in df_cont.columns else [0.0] * max_len,
             "CONTABIL - STATUS": df_cont["STATUS"] if "STATUS" in df_cont.columns else [""] * max_len,
-            "CLIENTE - GRUPO DRE": df_cli["GRUPO DRE"] if "GRUPO DRE" in df_cli.columns else [""] * max_len,
+            "CLIENTE - CÓD. PLANO 04": df_cli["CÓD. PLANO 04"] if "CÓD. PLANO 04" in df_cli.columns else [""] * max_len,
             "CLIENTE - FORNECEDOR": df_cli["FORNECEDOR"] if "FORNECEDOR" in df_cli.columns else [""] * max_len,
             "CLIENTE - VALOR": df_cli["VALOR"] if "VALOR" in df_cli.columns else [0.0] * max_len,
             "CLIENTE - STATUS": df_cli["STATUS"] if "STATUS" in df_cli.columns else [""] * max_len,
