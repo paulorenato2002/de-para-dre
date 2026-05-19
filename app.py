@@ -792,19 +792,67 @@ elif menu == "Parametrização":
         if df_pendencias.empty:
             st.success("Todas as contas/fornecedores dessa base já estão parametrizados.")
         else:
-            st.dataframe(
-                df_pendencias.rename(
-                    columns={
-                        "GRUPO DRE": "GRUPO DRE",
-                        "CÓD. PLANO 04": "CÓD. PLANO 04",
-                        "FORNECEDOR": "FORNECEDOR",
-                        "VALOR": "VALOR",
-                        "QTD LANCAMENTOS": "QTD LANCAMENTOS",
-                        "STATUS": "STATUS",
-                    }
-                ).style.format({"VALOR": "R$ {:,.2f}"}),
-                use_container_width=True,
-                hide_index=True,
-            )
+            st.subheader("Montar parametrização das pendências")
+            st.caption("Preencha a conta débito nas linhas pendentes e salve para criar os vínculos no banco.")
+
+            df_edicao = df_pendencias.copy()
+            df_edicao.insert(0, "CONTA DÉBITO", "")
+
+            with st.form("form_param_pendencias"):
+                tabela_parametrizacao = st.data_editor(
+                    df_edicao,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "CONTA DÉBITO": st.column_config.TextColumn("CONTA DÉBITO", required=False),
+                        "GRUPO DRE": st.column_config.TextColumn("GRUPO DRE", disabled=True),
+                        "CÓD. PLANO 04": st.column_config.TextColumn("CÓD. PLANO 04", disabled=True),
+                        "FORNECEDOR": st.column_config.TextColumn("FORNECEDOR", disabled=True),
+                        "VALOR": st.column_config.NumberColumn("VALOR", disabled=True, format="R$ %.2f"),
+                        "QTD LANCAMENTOS": st.column_config.NumberColumn("QTD LANCAMENTOS", disabled=True),
+                        "STATUS": st.column_config.TextColumn("STATUS", disabled=True),
+                    },
+                )
+
+                salvar_parametrizacao = st.form_submit_button("💾 Salvar parametrizações pendentes", type="primary")
+
+                if salvar_parametrizacao:
+                    try:
+                        novos_dados = []
+                        vistos = set()
+
+                        for _, row in tabela_parametrizacao.iterrows():
+                            conta = normalizar_chave(row.get("CONTA DÉBITO", ""))
+                            fornecedor = normalizar_texto(row.get("CÓD. PLANO 04", ""))
+
+                            if not conta or not fornecedor:
+                                continue
+
+                            chave = (str(empresa_selecionada), conta, fornecedor)
+                            if chave in vistos:
+                                continue
+                            vistos.add(chave)
+
+                            supabase.table("parametrizacao_contas").delete() \
+                                .eq("empresa_id", str(empresa_selecionada)) \
+                                .eq("fornecedor_cliente", fornecedor) \
+                                .execute()
+
+                            novos_dados.append(
+                                {
+                                    "empresa_id": str(empresa_selecionada),
+                                    "conta_contabil": conta,
+                                    "fornecedor_cliente": fornecedor,
+                                }
+                            )
+
+                        if novos_dados:
+                            supabase.table("parametrizacao_contas").insert(novos_dados).execute()
+
+                        st.success("✅ Parametrizações salvas com sucesso!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao salvar parametrizações: {e}")
     elif fonte_cliente is not None and fonte_cliente.empty:
         st.warning("Não foi possível montar a lista de pendências porque a base do cliente está vazia.")
