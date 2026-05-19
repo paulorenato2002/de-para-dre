@@ -102,6 +102,23 @@ def normalizar_chave_relacionamento(val):
     return texto.strip()
 
 
+def linha_contem_receita(linha, colunas):
+    for coluna in colunas:
+        if coluna in linha.index:
+            texto = normalizar_texto(linha[coluna]).lower()
+            if "receita" in texto:
+                return True
+    return False
+
+
+def filtrar_receitas_df(df, colunas):
+    if df is None or df.empty or not colunas:
+        return df.copy() if df is not None else df
+    df = df.copy()
+    mask = df.apply(lambda linha: linha_contem_receita(linha, colunas), axis=1)
+    return df[~mask].copy()
+
+
 def limpar_colunas(df):
     df = df.copy()
     df.columns = df.columns.astype(str).str.strip()
@@ -235,7 +252,14 @@ def carregar_parametrizacao_empresa(empresa_id):
     return df_banco
 
 
-def preparar_pendencias_parametrizacao(df_cliente, df_parametros, col_nivel3_cliente, col_conta_cliente, col_fornecedor_cliente=None):
+def preparar_pendencias_parametrizacao(
+    df_cliente,
+    df_parametros,
+    col_nivel3_cliente,
+    col_conta_cliente,
+    col_fornecedor_cliente=None,
+    col_descricao_cliente=None,
+):
     if df_cliente is None or df_cliente.empty:
         return pd.DataFrame(columns=["GRUPO DRE", "CÓD. PLANO 04", "FORNECEDOR", "VALOR", "QTD LANCAMENTOS", "STATUS"])
 
@@ -246,6 +270,11 @@ def preparar_pendencias_parametrizacao(df_cliente, df_parametros, col_nivel3_cli
         df["_Nivel_4"] = df[col_conta_cliente].apply(normalizar_texto)
     if "_Fornecedor" not in df.columns and col_fornecedor_cliente and col_fornecedor_cliente in df.columns:
         df["_Fornecedor"] = df[col_fornecedor_cliente].apply(normalizar_texto)
+    if col_descricao_cliente and col_descricao_cliente in df.columns and "_Descricao" not in df.columns:
+        df["_Descricao"] = df[col_descricao_cliente].apply(normalizar_texto)
+
+    colunas_receita = [coluna for coluna in ["_Nivel_3", "_Nivel_4", "_Fornecedor", "_Descricao"] if coluna in df.columns]
+    df = filtrar_receitas_df(df, colunas_receita)
 
     parametros_existentes = set()
     if df_parametros is not None and not df_parametros.empty and "fornecedor_cliente" in df_parametros.columns:
@@ -596,6 +625,24 @@ if menu == "Conciliação":
                         df_cliente["_Fornecedor"] = df_cliente[col_fornecedor_cliente].apply(normalizar_texto)
                         df_cliente["_Fornecedor_Cod"] = df_cliente["_Fornecedor"].apply(extrair_codigo_inicial)
 
+                    colunas_receita_contabil = [coluna for coluna in [col_grupo_contabil, col_historico_contabil, col_conta_contabil] if coluna]
+                    colunas_receita_cliente = [
+                        coluna
+                        for coluna in [col_nivel3_cliente, col_conta_cliente, col_descricao_cliente, col_fornecedor_cliente]
+                        if coluna
+                    ]
+
+                    antes_contabil = len(df_contabil)
+                    antes_cliente = len(df_cliente)
+                    df_contabil = filtrar_receitas_df(df_contabil, colunas_receita_contabil)
+                    df_cliente = filtrar_receitas_df(df_cliente, colunas_receita_cliente)
+                    removidos_contabil = antes_contabil - len(df_contabil)
+                    removidos_cliente = antes_cliente - len(df_cliente)
+                    if removidos_contabil or removidos_cliente:
+                        st.info(
+                            f"Linhas de receita ignoradas nesta análise: {removidos_contabil} no contábil e {removidos_cliente} no cliente."
+                        )
+
                     # Puxar Parametrização da empresa selecionada
                     response = (
                         supabase.table("parametrizacao_contas")
@@ -723,6 +770,7 @@ if menu == "Conciliação":
                             "col_nivel3_cliente": col_nivel3_cliente,
                             "col_conta_cliente": col_conta_cliente,
                             "col_fornecedor_cliente": col_fornecedor_cliente,
+                            "col_descricao_cliente": col_descricao_cliente,
                         }
                         st.session_state["analise_conciliacao_assinatura"] = assinatura_atual
                         st.session_state["analise_conciliacao_empresa"] = empresa_selecionada
@@ -882,6 +930,7 @@ elif menu == "Parametrização":
     col_nivel3_cliente = st.session_state.get("analise_conciliacao", {}).get("col_nivel3_cliente")
     col_conta_cliente = st.session_state.get("analise_conciliacao", {}).get("col_conta_cliente")
     col_fornecedor_cliente = st.session_state.get("analise_conciliacao", {}).get("col_fornecedor_cliente")
+    col_descricao_cliente = st.session_state.get("analise_conciliacao", {}).get("col_descricao_cliente")
 
     if fonte_cliente is None or fonte_cliente.empty:
         st.info(
@@ -897,6 +946,7 @@ elif menu == "Parametrização":
             col_nivel3_cliente = obter_coluna(fonte_cliente, ["Plano de conta nº. 03"])
             col_conta_cliente = obter_coluna(fonte_cliente, ["Cód. Plano de conta nº. 04"])
             col_fornecedor_cliente = obter_coluna(fonte_cliente, ["Cliente/Fornecedor"])
+            col_descricao_cliente = obter_coluna(fonte_cliente, ["Descrição"])
             col_valor_cliente = obter_coluna(fonte_cliente, ["Débito"])
             if col_nivel3_cliente and col_conta_cliente and col_valor_cliente:
                 fonte_cliente["Valor_Tratado"] = fonte_cliente[col_valor_cliente].apply(tratar_valor)
@@ -914,6 +964,7 @@ elif menu == "Parametrização":
             col_nivel3_cliente,
             col_conta_cliente,
             col_fornecedor_cliente,
+            col_descricao_cliente,
         )
 
         if df_pendencias.empty:
