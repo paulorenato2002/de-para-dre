@@ -538,52 +538,31 @@ def preparar_base_documentos_fiscais(df_nfe, df_nfse):
 
 def calcular_totais_relatorios_notas(arquivo_contabil, arquivo_nfse, arquivo_nfe):
     totais = {
-        "contabil": 0.0,
         "nfse": 0.0,
         "nfe": 0.0,
+        "documentos": 0.0,
     }
     avisos = []
 
-    if arquivo_contabil:
-        arquivo_contabil.seek(0)
-        df_contabil = limpar_colunas(pd.read_excel(arquivo_contabil, engine="openpyxl"))
-        col_valor_contabil = obter_coluna_flexivel(df_contabil, ["valdeb"])
-        col_tipo_lan_contabil = obter_coluna_flexivel(df_contabil, ["tipo_lan"])
-
-        if not col_valor_contabil:
-            avisos.append("Razão contábil sem coluna `valdeb` para montar o quadro geral.")
-        else:
-            if col_tipo_lan_contabil:
-                df_contabil = df_contabil[
-                    df_contabil[col_tipo_lan_contabil].apply(normalizar_texto).str.upper() == "D"
-                ].copy()
-            totais["contabil"] = round(df_contabil[col_valor_contabil].apply(tratar_valor).sum(), 2)
-        arquivo_contabil.seek(0)
-
+    df_nfse = pd.DataFrame()
     if arquivo_nfse:
         arquivo_nfse.seek(0)
         df_nfse = limpar_colunas(pd.read_excel(arquivo_nfse, engine="openpyxl"))
-        col_valor_nfse = obter_coluna_flexivel(df_nfse, ["Vr. Total"])
-        col_situacao_nfse = obter_coluna_flexivel(df_nfse, ["Situação", "Situacao"])
-        if not col_valor_nfse:
-            avisos.append("NFSe sem coluna `Vr. Total` para montar o quadro geral.")
-        else:
-            if col_situacao_nfse:
-                df_nfse = df_nfse[~df_nfse[col_situacao_nfse].apply(status_excluido)].copy()
-            totais["nfse"] = round(df_nfse[col_valor_nfse].apply(tratar_valor).sum(), 2)
         arquivo_nfse.seek(0)
 
+    df_nfe = pd.DataFrame()
     if arquivo_nfe:
         arquivo_nfe.seek(0)
         df_nfe = limpar_colunas(pd.read_excel(arquivo_nfe, engine="openpyxl"))
-        col_valor_nfe = obter_coluna_flexivel(df_nfe, ["Vr. Nota"])
-        if not col_valor_nfe:
-            avisos.append("NFe sem coluna `Vr. Nota` para montar o quadro geral.")
-        else:
-            totais["nfe"] = round(df_nfe[col_valor_nfe].apply(tratar_valor).sum(), 2)
         arquivo_nfe.seek(0)
 
-    totais["documentos"] = round(totais["nfse"] + totais["nfe"], 2)
+    df_docs, avisos_docs = preparar_base_documentos_fiscais(df_nfe, df_nfse)
+    avisos.extend(avisos_docs)
+    if not df_docs.empty:
+        totais_por_origem = df_docs.groupby("_Origem", dropna=False)["Valor_Tratado"].sum().to_dict()
+        totais["nfse"] = round(float(totais_por_origem.get("NFSe", 0.0)), 2)
+        totais["nfe"] = round(float(totais_por_origem.get("NFe", 0.0)), 2)
+        totais["documentos"] = round(totais["nfse"] + totais["nfe"], 2)
     return totais, avisos
 
 
@@ -1632,6 +1611,7 @@ if menu == "Dre":
 
                             resultados = []
                             detalhes_por_conta = {}
+                            docs_usados = []
 
                             for _, row in df_cont_grp.iterrows():
                                 conta_contabil = str(row["Conta Débito"]).strip()
@@ -2018,21 +1998,35 @@ elif menu == "Notas Fiscais":
         with c3:
             file_nfe = st.file_uploader("📂 Upload NFe (.xlsx)", type=["xlsx", "xls"], key="nfe_documentos")
 
-        if file_contabil_docs or file_nfse or file_nfe:
+        assinatura_docs_atual = assinatura_arquivos(file_contabil_docs, file_nfse, file_nfe) if file_contabil_docs and (file_nfse or file_nfe) else None
+        analise_documentos_atual = st.session_state.get("analise_documentos_fiscais")
+        usar_totais_analise = (
+            analise_documentos_atual
+            and st.session_state.get("analise_documentos_empresa") == empresa_selecionada
+            and st.session_state.get("analise_documentos_assinatura") == assinatura_docs_atual
+            and analise_documentos_atual.get("totais_documentos_analise")
+        )
+
+        if file_nfse or file_nfe:
             try:
-                totais_relatorios, avisos_totais = calcular_totais_relatorios_notas(
-                    file_contabil_docs,
-                    file_nfse,
-                    file_nfe,
-                )
+                if usar_totais_analise:
+                    totais_relatorios = analise_documentos_atual["totais_documentos_analise"]
+                    avisos_totais = []
+                else:
+                    totais_relatorios, avisos_totais = calcular_totais_relatorios_notas(
+                        file_contabil_docs,
+                        file_nfse,
+                        file_nfe,
+                    )
 
                 st.markdown("### Quadro Geral de Totais")
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Contábil", formatar_moeda(totais_relatorios["contabil"]))
-                m2.metric("NFSe", formatar_moeda(totais_relatorios["nfse"]))
-                m3.metric("NFe", formatar_moeda(totais_relatorios["nfe"]))
-                m4.metric("NFSe + NFe", formatar_moeda(totais_relatorios["documentos"]))
-                st.caption("Resumo rápido dos valores totais dos arquivos enviados. No contábil, o total considera apenas `tipo_lan = D` quando essa coluna existir.")
+                m1, m2, m3 = st.columns(3)
+                m1.metric("NFSe", formatar_moeda(totais_relatorios["nfse"]))
+                m2.metric("NFe", formatar_moeda(totais_relatorios["nfe"]))
+                m3.metric("NFSe + NFe", formatar_moeda(totais_relatorios["documentos"]))
+                st.caption(
+                    "Resumo rápido dos documentos fiscais enviados. Depois que a comparação rodar, esse quadro passa a usar a mesma base do painel abaixo."
+                )
 
                 for aviso_total in avisos_totais:
                     st.warning(aviso_total)
@@ -2143,6 +2137,8 @@ elif menu == "Notas Fiscais":
                                 else:
                                     codigos_04 = set(regras["codigo_plano_04"].tolist())
                                     df_docs_match = df_documentos[df_documentos["_Nivel_4_Norm"].isin(codigos_04)].copy()
+                                    if not df_docs_match.empty:
+                                        docs_usados.append(df_docs_match[["_Origem", "Valor_Tratado"]].copy())
                                     valor_documentos = round(df_docs_match["Valor_Tratado"].sum(), 2)
                                     qtde_documentos = int(len(df_docs_match))
                                     diff = round(valor_contabil - valor_documentos, 2)
@@ -2163,12 +2159,23 @@ elif menu == "Notas Fiscais":
                                     )
                                     detalhes_por_conta[conta_contabil] = {"contabil": df_cont_detalhe, "documentos": df_docs_match}
 
+                            totais_documentos_analise = {"nfse": 0.0, "nfe": 0.0, "documentos": 0.0}
+                            if docs_usados:
+                                df_docs_usados = pd.concat(docs_usados, ignore_index=True)
+                                totais_por_origem = df_docs_usados.groupby("_Origem", dropna=False)["Valor_Tratado"].sum().to_dict()
+                                totais_documentos_analise["nfse"] = round(float(totais_por_origem.get("NFSe", 0.0)), 2)
+                                totais_documentos_analise["nfe"] = round(float(totais_por_origem.get("NFe", 0.0)), 2)
+                                totais_documentos_analise["documentos"] = round(
+                                    totais_documentos_analise["nfse"] + totais_documentos_analise["nfe"], 2
+                                )
+
                             st.session_state["analise_documentos_fiscais"] = {
                                 "df_resultados": pd.DataFrame(resultados),
                                 "detalhes_por_conta": detalhes_por_conta,
                                 "empresa_id": empresa_selecionada,
                                 "empresa_nome": EMPRESAS[empresa_selecionada],
                                 "df_documentos": df_documentos,
+                                "totais_documentos_analise": totais_documentos_analise,
                                 "col_conta_contabil": col_conta_contabil,
                                 "col_grupo_contabil": col_grupo_contabil,
                                 "col_historico_contabil": col_historico_contabil,
@@ -2182,7 +2189,7 @@ elif menu == "Notas Fiscais":
                         st.error(f"❌ Erro ao comparar razão com NFe/NFSe. Detalhe: {e}")
 
         analise_documentos = st.session_state.get("analise_documentos_fiscais")
-        assinatura_docs = assinatura_arquivos(file_contabil_docs, file_nfse, file_nfe) if file_contabil_docs and (file_nfse or file_nfe) else None
+        assinatura_docs = assinatura_docs_atual
         if (
             analise_documentos
             and st.session_state.get("analise_documentos_empresa") == empresa_selecionada
@@ -2191,6 +2198,8 @@ elif menu == "Notas Fiscais":
             renderizar_analise_documentos(analise_documentos)
         elif file_contabil_docs and (file_nfse or file_nfe):
             st.info("Clique em Iniciar Comparação de Notas para gerar a análise.")
+        elif file_nfse or file_nfe:
+            st.info("Envie também o RAZÃO CONTÁBIL para habilitar a comparação. NFe e NFSe continuam opcionais entre si.")
 
     with aba_parametrizacao:
         st.subheader("Parametrização das Notas")
