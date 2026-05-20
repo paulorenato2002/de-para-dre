@@ -1493,6 +1493,31 @@ empresa_selecionada = st.sidebar.selectbox(
     list(EMPRESAS.keys()),
     format_func=lambda x: EMPRESAS[x],
 )
+
+empresa_anterior = st.session_state.get("_empresa_anterior")
+if empresa_anterior is None:
+    st.session_state["_empresa_anterior"] = empresa_selecionada
+elif empresa_anterior != empresa_selecionada:
+    for chave in [
+        "contabil",
+        "cliente",
+        "cliente_consulta_parametrizacao",
+        "contabil_documentos",
+        "nfse_documentos",
+        "nfe_documentos",
+        "nfse_param",
+        "nfe_param",
+        "analise_conciliacao",
+        "analise_conciliacao_assinatura",
+        "analise_conciliacao_empresa",
+        "analise_documentos_fiscais",
+        "analise_documentos_assinatura",
+        "analise_documentos_empresa",
+    ]:
+        st.session_state.pop(chave, None)
+    st.session_state["_empresa_anterior"] = empresa_selecionada
+    st.rerun()
+
 menu = st.sidebar.radio("Ir para", ["Dre", "Notas Fiscais"])
 
 
@@ -2106,6 +2131,7 @@ elif menu == "Notas Fiscais":
 
                             resultados = []
                             detalhes_por_conta = {}
+                            docs_usados = []
 
                             for _, row in df_cont_grp.iterrows():
                                 conta_contabil = str(row["Conta Débito"]).strip()
