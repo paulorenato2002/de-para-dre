@@ -237,6 +237,38 @@ def formatar_moeda(valor):
     return f"R$ {abs(float(valor)):,.2f}"
 
 
+def formatar_data_exportacao(valor):
+    if pd.isna(valor):
+        return ""
+    if hasattr(valor, "strftime"):
+        try:
+            return valor.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    texto = normalizar_texto(valor)
+    if not texto:
+        return ""
+    tentativa = pd.to_datetime(texto, dayfirst=True, errors="coerce")
+    if pd.notna(tentativa):
+        return tentativa.strftime("%d/%m/%Y")
+    return texto
+
+
+def montar_historico_exportacao(*partes):
+    vistos = set()
+    saida = []
+    for parte in partes:
+        texto = normalizar_texto(parte)
+        if not texto:
+            continue
+        chave = texto.lower()
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        saida.append(texto)
+    return " - ".join(saida)
+
+
 def classificar_diferenca(diff):
     if abs(diff) <= 0.01:
         return "🟢 Bateu", "Os valores fecham certinho entre contábil e cliente."
@@ -418,6 +450,10 @@ def preparar_base_documentos_fiscais(df_nfe, df_nfse):
         col_fornecedor_nfse = obter_coluna_flexivel(df_nfse, ["Fornecedor"])
         col_numero_nfse = obter_coluna_flexivel(df_nfse, ["Nr. Nota"])
         col_situacao_nfse = obter_coluna_flexivel(df_nfse, ["Situação", "Situacao"])
+        col_data_nfse = obter_coluna_flexivel(
+            df_nfse,
+            ["Data de emissão", "Data emissao", "Dt. Emissão", "Dt Emissao", "Competência", "Competencia", "Data"],
+        )
 
         faltantes_nfse = []
         if not col_plano_nfse:
@@ -439,6 +475,7 @@ def preparar_base_documentos_fiscais(df_nfe, df_nfse):
             base_nfse["_Documento"] = (
                 base_nfse[col_numero_nfse].apply(normalizar_texto) if col_numero_nfse else ""
             )
+            base_nfse["_Data"] = base_nfse[col_data_nfse] if col_data_nfse else ""
             base_nfse["Valor_Tratado"] = base_nfse[col_valor_nfse].apply(tratar_valor)
             base_nfse["_Origem"] = "NFSe"
             bases.append(base_nfse)
@@ -448,6 +485,10 @@ def preparar_base_documentos_fiscais(df_nfe, df_nfse):
         col_valor_nfe = obter_coluna_flexivel(df_nfe, ["Vr. Nota"])
         col_fornecedor_nfe = obter_coluna_flexivel(df_nfe, ["Razão social (Emitente)", "Razo social (Emitente)"])
         col_numero_nfe = obter_coluna_flexivel(df_nfe, ["Nr. NFe", "Documento"])
+        col_data_nfe = obter_coluna_flexivel(
+            df_nfe,
+            ["Data de emissão", "Data emissao", "Dt. Emissão", "Dt Emissao", "Data", "Data Entrada"],
+        )
 
         faltantes_nfe = []
         if not col_plano_nfe:
@@ -471,6 +512,7 @@ def preparar_base_documentos_fiscais(df_nfe, df_nfse):
                 base_nfe["_Nivel_4_Norm"] = base_nfe["_Nivel_4"].apply(normalizar_chave_relacionamento)
                 base_nfe["_Fornecedor"] = base_nfe[col_fornecedor_nfe].apply(normalizar_texto)
                 base_nfe["_Documento"] = base_nfe[col_numero_nfe].apply(normalizar_texto) if col_numero_nfe else ""
+                base_nfe["_Data"] = base_nfe[col_data_nfe] if col_data_nfe else ""
                 base_nfe["Valor_Tratado"] = base_nfe[col_valor_nfe].apply(tratar_valor)
                 base_nfe["_Origem"] = "NFe"
                 bases.append(base_nfe)
@@ -967,6 +1009,214 @@ def exportar_excel_relatorio_documentos(nome_cliente, df_resumo, quadro_export):
     return output.getvalue()
 
 
+def separar_exportacao_por_status(df_exportacao, esconder_sem_param_no_todos=False):
+    todos = df_exportacao.copy()
+    if esconder_sem_param_no_todos:
+        todos = todos[todos["_STATUS"] != "⚠️ Sem parametrização"].copy()
+
+    return {
+        "Todos": todos,
+        "Divergente": df_exportacao[df_exportacao["_STATUS"] == "🔴 Divergente"].copy(),
+        "Sem Parametrizacao": df_exportacao[df_exportacao["_STATUS"] == "⚠️ Sem parametrização"].copy(),
+        "Bateu": df_exportacao[df_exportacao["_STATUS"] == "🟢 Bateu"].copy(),
+    }
+
+
+def exportar_planilha_contabil(nome_cliente, abas_exportacao):
+    output = BytesIO()
+    colunas_saida = ["Data", "Débito", "Crédito", "Valor", "Cod. Hist.", "Histórico"]
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for nome_aba, df_aba in abas_exportacao.items():
+            df_saida = df_aba.copy()
+            if df_saida.empty:
+                df_saida = pd.DataFrame(columns=colunas_saida)
+            else:
+                df_saida = df_saida[colunas_saida].copy()
+            df_saida.to_excel(writer, sheet_name=nome_aba[:31], index=False, startrow=1)
+
+        wb = writer.book
+        titulo = PatternFill("solid", fgColor="2F5597")
+        cinza = PatternFill("solid", fgColor="F3F6F9")
+        branco = Font(color="FFFFFF", bold=True)
+        bold = Font(bold=True)
+        thin = Side(style="thin", color="D9E2F3")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        for nome_aba in abas_exportacao.keys():
+            ws = wb[nome_aba[:31]]
+            ws.merge_cells("A1:F1")
+            ws["A1"] = f"EXPORTACAO CONTABIL - {nome_cliente}"
+            ws["A1"].fill = titulo
+            ws["A1"].font = branco
+            ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+            ws.freeze_panes = "A3"
+
+            for cell in ws[2]:
+                cell.font = bold
+                cell.fill = cinza
+                cell.border = border
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            for row in ws.iter_rows(min_row=3):
+                for cell in row:
+                    cell.border = border
+                    if cell.column == 4:
+                        cell.number_format = 'R$ #,##0.00'
+
+            larguras = {
+                "A": 14,
+                "B": 14,
+                "C": 14,
+                "D": 14,
+                "E": 14,
+                "F": 55,
+            }
+            for coluna, largura in larguras.items():
+                ws.column_dimensions[coluna].width = largura
+
+    output.seek(0)
+    return output.getvalue()
+
+
+def montar_exportacao_contabil_dre(analise):
+    df_cliente = analise["df_cliente"].copy()
+    df_resultados = analise["df_resultados"].copy()
+    empresa_id = analise["empresa_id"]
+    col_data_cliente = analise.get("col_data_cliente")
+    col_fornecedor_cliente = analise.get("col_fornecedor_cliente")
+    col_descricao_cliente = analise.get("col_descricao_cliente")
+
+    if df_cliente.empty:
+        return pd.DataFrame()
+
+    df_parametros = carregar_parametrizacao_empresa(empresa_id)
+    mapa_contas = {}
+    if not df_parametros.empty:
+        df_parametros = df_parametros.copy()
+        df_parametros["fornecedor_cliente"] = df_parametros["fornecedor_cliente"].apply(normalizar_chave_relacionamento)
+        df_parametros["conta_contabil"] = df_parametros["conta_contabil"].apply(normalizar_chave)
+        mapa_contas = dict(zip(df_parametros["fornecedor_cliente"], df_parametros["conta_contabil"]))
+
+    mapa_status = dict(zip(df_resultados["Conta Débito"].astype(str), df_resultados["STATUS"]))
+
+    df_export = df_cliente.copy()
+    if "_Nivel_4_Norm" not in df_export.columns:
+        df_export["_Nivel_4_Norm"] = df_export["_Nivel_4"].apply(normalizar_chave_relacionamento)
+
+    df_export["Débito"] = df_export["_Nivel_4_Norm"].map(mapa_contas).fillna("")
+    df_export["_STATUS"] = df_export["Débito"].map(mapa_status).fillna("⚠️ Sem parametrização")
+    df_export["Data"] = (
+        df_export[col_data_cliente].apply(formatar_data_exportacao)
+        if col_data_cliente and col_data_cliente in df_export.columns
+        else ""
+    )
+    df_export["Crédito"] = ""
+    df_export["Valor"] = df_export["Valor_Tratado"].apply(float)
+    df_export["Cod. Hist."] = ""
+    df_export["Histórico"] = df_export.apply(
+        lambda row: montar_historico_exportacao(
+            row.get(col_fornecedor_cliente, "") if col_fornecedor_cliente else "",
+            row.get(col_descricao_cliente, "") if col_descricao_cliente else "",
+            row.get("_Nivel_4", ""),
+        ),
+        axis=1,
+    )
+    return df_export[df_export["Valor"] != 0].copy()
+
+
+def montar_exportacao_contabil_documentos(analise):
+    df_documentos = analise["df_documentos"].copy()
+    df_resultados = analise["df_resultados"].copy()
+    empresa_id = analise["empresa_id"]
+
+    if df_documentos.empty:
+        return pd.DataFrame()
+
+    df_parametros = carregar_parametrizacao_notas_empresa(empresa_id)
+    mapa_contas = {}
+    if not df_parametros.empty:
+        df_parametros = df_parametros.copy()
+        df_parametros["codigo_plano_04"] = df_parametros["codigo_plano_04"].apply(normalizar_chave_relacionamento)
+        df_parametros["conta_contabil"] = df_parametros["conta_contabil"].apply(normalizar_chave)
+        mapa_contas = dict(zip(df_parametros["codigo_plano_04"], df_parametros["conta_contabil"]))
+
+    mapa_status = dict(zip(df_resultados["Conta Débito"].astype(str), df_resultados["STATUS"]))
+
+    df_export = df_documentos.copy()
+    df_export["Débito"] = df_export["_Nivel_4_Norm"].map(mapa_contas).fillna("")
+    df_export["_STATUS"] = df_export["Débito"].map(mapa_status).fillna("⚠️ Sem parametrização")
+    df_export["Data"] = df_export["_Data"].apply(formatar_data_exportacao) if "_Data" in df_export.columns else ""
+    df_export["Crédito"] = ""
+    df_export["Valor"] = df_export["Valor_Tratado"].apply(float)
+    df_export["Cod. Hist."] = ""
+    df_export["Histórico"] = df_export.apply(
+        lambda row: montar_historico_exportacao(
+            row.get("_Origem", ""),
+            row.get("_Fornecedor", ""),
+            row.get("_Documento", ""),
+            row.get("_Nivel_4", ""),
+        ),
+        axis=1,
+    )
+    return df_export[df_export["Valor"] != 0].copy()
+
+
+def renderizar_exportacao_contabil(nome_cliente, df_exportacao, esconder_sem_param_no_todos, prefixo_arquivo):
+    st.subheader("Exportação Contábil")
+    st.caption("Base modelo para importação no sistema contábil, separada por status em abas do Excel.")
+    st.caption("`Débito` sai da parametrização. `Crédito` e `Cod. Hist.` ficam em branco para complemento, porque os arquivos de origem não trazem uma regra única para esses campos.")
+
+    if df_exportacao is None or df_exportacao.empty:
+        st.info("Rode o comparativo primeiro para gerar a base de exportação contábil desta tela.")
+        return
+
+    abas_exportacao = separar_exportacao_por_status(df_exportacao, esconder_sem_param_no_todos=esconder_sem_param_no_todos)
+    arquivo_excel = exportar_planilha_contabil(nome_cliente, abas_exportacao)
+
+    resumo_abas = pd.DataFrame(
+        [
+            {
+                "Aba": nome_aba,
+                "Lançamentos": len(df_aba),
+                "Valor Total": round(df_aba["Valor"].sum(), 2) if not df_aba.empty else 0.0,
+            }
+            for nome_aba, df_aba in abas_exportacao.items()
+        ]
+    )
+
+    st.dataframe(
+        resumo_abas.style.format({"Valor Total": "R$ {:,.2f}"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    preview_aba = st.selectbox(
+        "Pré-visualizar aba",
+        list(abas_exportacao.keys()),
+        key=f"preview_exportacao_{prefixo_arquivo}",
+    )
+    df_preview = abas_exportacao[preview_aba]
+    if df_preview.empty:
+        st.info("Nenhum lançamento encontrado para esta aba.")
+    else:
+        st.dataframe(
+            df_preview[["Data", "Débito", "Crédito", "Valor", "Cod. Hist.", "Histórico"]].style.format(
+                {"Valor": "R$ {:,.2f}"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.download_button(
+        "📥 Baixar planilha de exportação contábil",
+        data=arquivo_excel,
+        file_name=f"{prefixo_arquivo}_exportacao_contabil.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+
 def assinatura_arquivos(*arquivos):
     return tuple(
         (
@@ -1141,7 +1391,9 @@ def renderizar_analise_documentos(analise):
         key=filtro_key,
     )
     df_filtrado = df_resultados
-    if filtro != "Todos":
+    if filtro == "Todos":
+        df_filtrado = df_filtrado[df_filtrado["STATUS"] != "⚠️ Sem parametrização"].copy()
+    else:
         df_filtrado = df_filtrado[df_filtrado["STATUS"] == filtro]
 
     if df_filtrado.empty:
@@ -1254,7 +1506,9 @@ if menu == "Dre":
     st.title(f"📊 DRE x Contábil - {EMPRESAS[empresa_selecionada]}")
     st.markdown("Comparativo entre o relatório contábil e a DRE do cliente, com parametrização separada por empresa.")
 
-    aba_comparativo_dre, aba_parametrizacao_dre = st.tabs(["Comparativo", "Parametrização"])
+    aba_comparativo_dre, aba_parametrizacao_dre, aba_exportacao_dre = st.tabs(
+        ["Comparativo", "Parametrização", "Exportação Contábil"]
+    )
 
     with aba_comparativo_dre:
         col1, col2 = st.columns(2)
@@ -1280,6 +1534,7 @@ if menu == "Dre":
                         col_conta_cliente = obter_coluna(df_cliente, ["Cód. Plano de conta nº. 04"])
                         col_nivel3_cliente = obter_coluna(df_cliente, ["Plano de conta nº. 03"])
                         col_valor_cliente = obter_coluna(df_cliente, ["Débito"])
+                        col_data_cliente = obter_coluna(df_cliente, ["Dt. Movimento", "Data", "Data Movimento"])
                         col_descricao_cliente = obter_coluna(df_cliente, ["Descrição"])
                         col_fornecedor_cliente = obter_coluna(df_cliente, ["Cliente/Fornecedor"])
 
@@ -1436,6 +1691,7 @@ if menu == "Dre":
                                 "col_historico_contabil": col_historico_contabil,
                                 "col_nivel3_cliente": col_nivel3_cliente,
                                 "col_conta_cliente": col_conta_cliente,
+                                "col_data_cliente": col_data_cliente,
                                 "col_fornecedor_cliente": col_fornecedor_cliente,
                                 "col_descricao_cliente": col_descricao_cliente,
                             }
@@ -1705,6 +1961,24 @@ if menu == "Dre":
         elif fonte_cliente is not None and fonte_cliente.empty:
             st.warning("Não foi possível montar a lista de pendências porque a base do cliente está vazia.")
 
+    with aba_exportacao_dre:
+        analise_dre = st.session_state.get("analise_conciliacao")
+        if analise_dre and st.session_state.get("analise_conciliacao_empresa") == empresa_selecionada:
+            df_exportacao_dre = montar_exportacao_contabil_dre(analise_dre)
+            renderizar_exportacao_contabil(
+                EMPRESAS[empresa_selecionada],
+                df_exportacao_dre,
+                esconder_sem_param_no_todos=False,
+                prefixo_arquivo=f"dre_{empresa_selecionada}",
+            )
+        else:
+            renderizar_exportacao_contabil(
+                EMPRESAS[empresa_selecionada],
+                pd.DataFrame(),
+                esconder_sem_param_no_todos=False,
+                prefixo_arquivo=f"dre_{empresa_selecionada}",
+            )
+
 
 # ==========================================
 # TELA 3: NOTAS FISCAIS X CONTÁBIL
@@ -1713,7 +1987,9 @@ elif menu == "Notas Fiscais":
     st.title(f"🧾 Notas Fiscais x Razão - {EMPRESAS[empresa_selecionada]}")
     st.markdown("Comparativo entre o razão contábil e os relatórios de NFe/NFSe, com banco de parametrização separado.")
 
-    aba_comparativo, aba_parametrizacao = st.tabs(["Comparativo", "Parametrização"])
+    aba_comparativo, aba_parametrizacao, aba_exportacao = st.tabs(
+        ["Comparativo", "Parametrização", "Exportação Contábil"]
+    )
 
     with aba_comparativo:
         c1, c2, c3 = st.columns(3)
@@ -2184,3 +2460,21 @@ elif menu == "Notas Fiscais":
                                 st.error(f"Erro ao salvar parametrizações pendentes das notas: {e}")
         elif fonte_documentos is not None and fonte_documentos.empty:
             st.warning("Não foi possível montar a lista de pendências porque a base de documentos está vazia.")
+
+    with aba_exportacao:
+        analise_docs = st.session_state.get("analise_documentos_fiscais")
+        if analise_docs and st.session_state.get("analise_documentos_empresa") == empresa_selecionada:
+            df_exportacao_docs = montar_exportacao_contabil_documentos(analise_docs)
+            renderizar_exportacao_contabil(
+                EMPRESAS[empresa_selecionada],
+                df_exportacao_docs,
+                esconder_sem_param_no_todos=True,
+                prefixo_arquivo=f"notas_{empresa_selecionada}",
+            )
+        else:
+            renderizar_exportacao_contabil(
+                EMPRESAS[empresa_selecionada],
+                pd.DataFrame(),
+                esconder_sem_param_no_todos=True,
+                prefixo_arquivo=f"notas_{empresa_selecionada}",
+            )
