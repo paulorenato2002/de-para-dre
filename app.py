@@ -196,6 +196,17 @@ def erro_tabela_ausente(err):
     return "pgrst205" in texto or "could not find the table" in texto
 
 
+def erro_rls_policy(err):
+    if not err:
+        return False
+    if isinstance(err, dict):
+        codigo = str(err.get("code", "")).upper()
+        mensagem = str(err.get("message", "")).lower()
+        return codigo == "42501" or "row-level security policy" in mensagem
+    texto = str(err).lower()
+    return "42501" in texto or "row-level security policy" in texto
+
+
 def sql_tabela_parametrizacao_notas():
     return f"""create table if not exists public.{TABELA_PARAMETRIZACAO_NOTAS} (
     id bigserial primary key,
@@ -512,7 +523,7 @@ def montar_quadro_lado_a_lado_documentos(df_cont, df_docs):
 def preparar_pendencias_documentos(df_docs, df_parametros):
     if df_docs is None or df_docs.empty:
         return pd.DataFrame(
-            columns=["PLANO DE CONTA Nº. 03", "CÓD. PLANO DE CONTA Nº. 04", "FORNECEDOR/EMITENTE", "ORIGENS", "VALOR", "QTD DOCUMENTOS", "STATUS"]
+            columns=["PLANO DE CONTA Nº. 03", "CÓD. PLANO DE CONTA Nº. 04", "FORNECEDOR/EMITENTE", "ORIGENS"]
         )
 
     df = df_docs.copy()
@@ -526,29 +537,26 @@ def preparar_pendencias_documentos(df_docs, df_parametros):
     df_pend = df[~df["__parametrizado"]].copy()
     if df_pend.empty:
         return pd.DataFrame(
-            columns=["PLANO DE CONTA Nº. 03", "CÓD. PLANO DE CONTA Nº. 04", "FORNECEDOR/EMITENTE", "ORIGENS", "VALOR", "QTD DOCUMENTOS", "STATUS"]
+            columns=["PLANO DE CONTA Nº. 03", "CÓD. PLANO DE CONTA Nº. 04", "FORNECEDOR/EMITENTE", "ORIGENS"]
         )
 
     juntar_unicos = lambda serie: " | ".join(
         [item for item in pd.Series(serie).dropna().astype(str).map(normalizar_texto).unique() if item]
     )
 
-    df_pend["VALOR"] = df_pend["Valor_Tratado"].apply(float)
+    df_pend = df_pend.drop_duplicates(subset=["_Nivel_4", "_Fornecedor", "_Origem", "_Documento"])
     df_pend = (
         df_pend.groupby("_Nivel_4", dropna=False, as_index=False)
         .agg(
             **{
                 "FORNECEDOR/EMITENTE": ("_Fornecedor", juntar_unicos),
                 "ORIGENS": ("_Origem", juntar_unicos),
-                "VALOR": ("VALOR", "sum"),
-                "QTD DOCUMENTOS": ("_Nivel_4", "size"),
             }
         )
         .rename(columns={"_Nivel_4": "CÓD. PLANO DE CONTA Nº. 04"})
-        .sort_values(["VALOR", "QTD DOCUMENTOS"], ascending=False)
+        .sort_values(["CÓD. PLANO DE CONTA Nº. 04"], ascending=True)
     )
     df_pend.insert(0, "PLANO DE CONTA Nº. 03", "")
-    df_pend["STATUS"] = "Sem parametrização"
     return df_pend
 
 
@@ -1700,6 +1708,10 @@ elif menu == "Notas Fiscais":
                         st.error(
                             f"A tabela `{TABELA_PARAMETRIZACAO_NOTAS}` ainda não existe no Supabase. Rode o SQL acima e tente de novo."
                         )
+                    elif erro_rls_policy(e):
+                        st.error(
+                            "O Supabase bloqueou a gravação por RLS. Para salvar pela aplicação, configure `SUPABASE_SERVICE_ROLE_KEY` no Streamlit Cloud ou crie uma policy de insert/update para essa tabela."
+                        )
                     else:
                         st.error(f"Erro ao carregar base padrão: {e}")
 
@@ -1824,6 +1836,10 @@ elif menu == "Notas Fiscais":
                         st.error(
                             f"A tabela `{TABELA_PARAMETRIZACAO_NOTAS}` ainda não existe no Supabase. Rode o SQL acima e tente de novo."
                         )
+                    elif erro_rls_policy(e):
+                        st.error(
+                            "O Supabase bloqueou a gravação por RLS. Para salvar pela aplicação, configure `SUPABASE_SERVICE_ROLE_KEY` no Streamlit Cloud ou crie uma policy de insert/update para essa tabela."
+                        )
                     else:
                         st.error(f"Erro ao atualizar parametrizações das notas: {e}")
 
@@ -1852,7 +1868,7 @@ elif menu == "Notas Fiscais":
                 st.success("Todos os planos desta base já estão parametrizados no banco de notas.")
             else:
                 df_edicao_docs = df_pendencias_docs.copy()
-                df_edicao_docs["CONTA CONTÁBIL"] = ""
+                df_edicao_docs.insert(0, "CONTA CONTÁBIL", "")
 
                 with st.form("form_param_pendencias_notas"):
                     tabela_param_docs = st.data_editor(
@@ -1861,14 +1877,11 @@ elif menu == "Notas Fiscais":
                         use_container_width=True,
                         hide_index=True,
                         column_config={
+                            "CONTA CONTÁBIL": st.column_config.TextColumn("Conta contábil", required=False),
                             "PLANO DE CONTA Nº. 03": st.column_config.TextColumn("Plano de conta nº. 03", required=False),
                             "CÓD. PLANO DE CONTA Nº. 04": st.column_config.TextColumn("Cód. Plano de conta nº. 04", disabled=True),
-                            "CONTA CONTÁBIL": st.column_config.TextColumn("Conta contábil", required=False),
                             "FORNECEDOR/EMITENTE": st.column_config.TextColumn("Fornecedor/Emitente", disabled=True),
                             "ORIGENS": st.column_config.TextColumn("Origens", disabled=True),
-                            "VALOR": st.column_config.NumberColumn("Valor", disabled=True, format="R$ %.2f"),
-                            "QTD DOCUMENTOS": st.column_config.NumberColumn("Qtd documentos", disabled=True),
-                            "STATUS": st.column_config.TextColumn("Status", disabled=True),
                         },
                     )
                     salvar_pendencias_notas = st.form_submit_button("💾 Salvar parametrizações pendentes das notas", type="primary")
@@ -1906,6 +1919,10 @@ elif menu == "Notas Fiscais":
                             if erro_tabela_ausente(e):
                                 st.error(
                                     f"A tabela `{TABELA_PARAMETRIZACAO_NOTAS}` ainda não existe no Supabase. Rode o SQL acima e tente de novo."
+                                )
+                            elif erro_rls_policy(e):
+                                st.error(
+                                    "O Supabase bloqueou a gravação por RLS. Para salvar pela aplicação, configure `SUPABASE_SERVICE_ROLE_KEY` no Streamlit Cloud ou crie uma policy de insert/update para essa tabela."
                                 )
                             else:
                                 st.error(f"Erro ao salvar parametrizações pendentes das notas: {e}")
