@@ -639,20 +639,57 @@ def preparar_registros_parametrizacao_notas(df_parametrizacao, empresa_id):
 
 
 def importar_modelo_parametrizacao_notas(arquivo):
-    df_importado = limpar_colunas(pd.read_excel(arquivo, engine="openpyxl"))
-    colunas_mapeadas = {
-        "CONTA CONTÁBIL": obter_coluna_flexivel(df_importado, ["CONTA CONTÁBIL", "CONTA CONTABIL"]),
-        "PLANO DE CONTA Nº. 03": obter_coluna_flexivel(df_importado, ["PLANO DE CONTA Nº. 03", "PLANO DE CONTA N 03"]),
-        "CÓD. PLANO DE CONTA Nº. 04": obter_coluna_flexivel(
-            df_importado,
-            ["CÓD. PLANO DE CONTA Nº. 04", "COD. PLANO DE CONTA Nº. 04", "COD. PLANO DE CONTA N 04"],
-        ),
-    }
+    candidatos_conta = ["CONTA CONTÁBIL", "CONTA CONTABIL"]
+    candidatos_plano_03 = ["PLANO DE CONTA Nº. 03", "PLANO DE CONTA N 03", "PLANO DE CONTA Nº. 03"]
+    candidatos_codigo_04 = [
+        "CÓD. PLANO DE CONTA Nº. 04",
+        "COD. PLANO DE CONTA Nº. 04",
+        "COD. PLANO DE CONTA N 04",
+        "CÓD. PLANO 04",
+    ]
+
+    def normalizar_dataframe_importacao(df_importado):
+        df_importado = limpar_colunas(df_importado)
+        colunas_mapeadas = {
+            "CONTA CONTÁBIL": obter_coluna_flexivel(df_importado, candidatos_conta),
+            "PLANO DE CONTA Nº. 03": obter_coluna_flexivel(df_importado, candidatos_plano_03),
+            "CÓD. PLANO DE CONTA Nº. 04": obter_coluna_flexivel(df_importado, candidatos_codigo_04),
+        }
+        return df_importado, colunas_mapeadas
+
+    arquivo.seek(0)
+    bruto = pd.read_excel(arquivo, engine="openpyxl", header=None)
+
+    melhor_tentativa = None
+    for idx in range(min(len(bruto), 8)):
+        cabecalho = [normalizar_texto(valor) for valor in bruto.iloc[idx].tolist()]
+        if not any(cabecalho):
+            continue
+
+        df_candidato = bruto.iloc[idx + 1 :].copy()
+        df_candidato.columns = cabecalho
+        df_candidato = df_candidato.dropna(how="all")
+        df_candidato, colunas_mapeadas = normalizar_dataframe_importacao(df_candidato)
+
+        if colunas_mapeadas.get("CONTA CONTÁBIL") and colunas_mapeadas.get("CÓD. PLANO DE CONTA Nº. 04"):
+            melhor_tentativa = (df_candidato, colunas_mapeadas)
+            break
+
+    if melhor_tentativa is None:
+        arquivo.seek(0)
+        df_padrao = pd.read_excel(arquivo, engine="openpyxl")
+        df_padrao, colunas_mapeadas = normalizar_dataframe_importacao(df_padrao)
+        melhor_tentativa = (df_padrao, colunas_mapeadas)
+
+    df_importado, colunas_mapeadas = melhor_tentativa
 
     obrigatorias = ["CONTA CONTÁBIL", "CÓD. PLANO DE CONTA Nº. 04"]
     faltando = [coluna for coluna in obrigatorias if not colunas_mapeadas.get(coluna)]
     if faltando:
-        raise ValueError(f"A planilha importada não contém as colunas obrigatórias: {', '.join(faltando)}.")
+        raise ValueError(
+            "A planilha importada não contém as colunas obrigatórias: "
+            f"{', '.join(faltando)}. Use o modelo baixado no sistema."
+        )
 
     df_normalizado = pd.DataFrame(
         {
@@ -665,7 +702,7 @@ def importar_modelo_parametrizacao_notas(arquivo):
             "CÓD. PLANO DE CONTA Nº. 04": df_importado[colunas_mapeadas["CÓD. PLANO DE CONTA Nº. 04"]],
         }
     )
-    return df_normalizado.fillna("")
+    return df_normalizado.dropna(how="all").fillna("")
 
 
 def salvar_parametrizacao_notas(df_parametrizacao, empresa_id):
