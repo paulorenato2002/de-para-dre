@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
 from io import BytesIO
+from pathlib import Path
 import re
+import unicodedata
 
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -57,6 +59,7 @@ def carregar_empresas():
 
 
 EMPRESAS = carregar_empresas()
+ARQUIVO_SEED_PARAMETRIZACAO_NOTAS = Path(__file__).with_name("parametrizacao_notas_seed_401.csv")
 
 
 # --- 2. FUNÇÕES ÚTEIS ---
@@ -100,6 +103,17 @@ def normalizar_chave_relacionamento(val):
     texto = re.sub(r"\s+", " ", texto)
     texto = re.sub(r"\s*-\s*", " - ", texto)
     return texto.strip()
+
+
+def normalizar_nome_coluna(val):
+    texto = normalizar_texto(val)
+    if not texto:
+        return ""
+    texto = re.sub(r"<[^>]+>", " ", texto)
+    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+    texto = texto.lower()
+    texto = re.sub(r"[^a-z0-9]+", " ", texto)
+    return re.sub(r"\s+", " ", texto).strip()
 
 
 def aplicar_filtros_cliente(df, col_plano_01, col_nivel4):
@@ -153,6 +167,20 @@ def obter_coluna(df, candidatos):
     for coluna in candidatos:
         if coluna in df.columns:
             return coluna
+    return None
+
+
+def obter_coluna_flexivel(df, candidatos):
+    mapa = {normalizar_nome_coluna(coluna): coluna for coluna in df.columns}
+    for candidato in candidatos:
+        chave = normalizar_nome_coluna(candidato)
+        if chave in mapa:
+            return mapa[chave]
+    for candidato in candidatos:
+        chave = normalizar_nome_coluna(candidato)
+        for coluna_norm, coluna_original in mapa.items():
+            if chave and (chave in coluna_norm or coluna_norm in chave):
+                return coluna_original
     return None
 
 
@@ -258,6 +286,33 @@ def carregar_parametrizacao_empresa(empresa_id):
     return df_banco
 
 
+def carregar_parametrizacao_notas_empresa(empresa_id):
+    try:
+        response = (
+            supabase.table("parametrizacao_notas_fiscais")
+            .select("id, plano_conta_nivel_03, codigo_plano_04, conta_contabil")
+            .eq("empresa_id", str(empresa_id))
+            .execute()
+        )
+        df_banco = pd.DataFrame(response.data)
+    except Exception:
+        df_banco = pd.DataFrame()
+
+    if df_banco.empty:
+        df_banco = pd.DataFrame(columns=["id", "plano_conta_nivel_03", "codigo_plano_04", "conta_contabil"])
+    return df_banco
+
+
+def carregar_seed_parametrizacao_notas():
+    if not ARQUIVO_SEED_PARAMETRIZACAO_NOTAS.exists():
+        return pd.DataFrame(columns=["empresa_id", "plano_conta_nivel_03", "codigo_plano_04", "conta_contabil"])
+    df_seed = pd.read_csv(ARQUIVO_SEED_PARAMETRIZACAO_NOTAS, dtype=str).fillna("")
+    for coluna in ["empresa_id", "plano_conta_nivel_03", "codigo_plano_04", "conta_contabil"]:
+        if coluna not in df_seed.columns:
+            df_seed[coluna] = ""
+    return df_seed[["empresa_id", "plano_conta_nivel_03", "codigo_plano_04", "conta_contabil"]].copy()
+
+
 def preparar_pendencias_parametrizacao(
     df_cliente,
     df_parametros,
@@ -302,6 +357,166 @@ def preparar_pendencias_parametrizacao(
         .sort_values(["VALOR", "QTD_LANCAMENTOS"], ascending=False)
     )
 
+    df_pend["STATUS"] = "Sem parametrização"
+    return df_pend
+
+
+def preparar_base_documentos_fiscais(df_nfe, df_nfse):
+    bases = []
+    avisos = []
+
+    if df_nfse is not None and not df_nfse.empty:
+        col_plano_nfse = obter_coluna_flexivel(df_nfse, ["Plano de contas", "Plano de Contas"])
+        col_valor_nfse = obter_coluna_flexivel(df_nfse, ["Vr. Total"])
+        col_fornecedor_nfse = obter_coluna_flexivel(df_nfse, ["Fornecedor"])
+        col_numero_nfse = obter_coluna_flexivel(df_nfse, ["Nr. Nota"])
+
+        faltantes_nfse = []
+        if not col_plano_nfse:
+            faltantes_nfse.append("Plano de contas")
+        if not col_valor_nfse:
+            faltantes_nfse.append("Vr. Total")
+        if not col_fornecedor_nfse:
+            faltantes_nfse.append("Fornecedor")
+
+        if faltantes_nfse:
+            avisos.append("NFSe sem colunas esperadas: " + ", ".join(faltantes_nfse))
+        else:
+            base_nfse = df_nfse.copy()
+            base_nfse["_Nivel_4"] = base_nfse[col_plano_nfse].apply(normalizar_texto)
+            base_nfse["_Nivel_4_Norm"] = base_nfse["_Nivel_4"].apply(normalizar_chave_relacionamento)
+            base_nfse["_Fornecedor"] = base_nfse[col_fornecedor_nfse].apply(normalizar_texto)
+            base_nfse["_Documento"] = (
+                base_nfse[col_numero_nfse].apply(normalizar_texto) if col_numero_nfse else ""
+            )
+            base_nfse["Valor_Tratado"] = base_nfse[col_valor_nfse].apply(tratar_valor)
+            base_nfse["_Origem"] = "NFSe"
+            bases.append(base_nfse)
+
+    if df_nfe is not None and not df_nfe.empty:
+        col_plano_nfe = obter_coluna_flexivel(df_nfe, ["Plano de Contas", "Plano de contas", "TAG de Cliente"])
+        col_valor_nfe = obter_coluna_flexivel(df_nfe, ["Vr. Nota"])
+        col_fornecedor_nfe = obter_coluna_flexivel(df_nfe, ["Razão social (Emitente)", "Razo social (Emitente)"])
+        col_numero_nfe = obter_coluna_flexivel(df_nfe, ["Nr. NFe", "Documento"])
+
+        faltantes_nfe = []
+        if not col_plano_nfe:
+            faltantes_nfe.append("Plano de Contas")
+        if not col_valor_nfe:
+            faltantes_nfe.append("Vr. Nota")
+        if not col_fornecedor_nfe:
+            faltantes_nfe.append("Razão social (Emitente)")
+
+        if faltantes_nfe:
+            avisos.append("NFe sem colunas esperadas: " + ", ".join(faltantes_nfe))
+        else:
+            base_nfe = df_nfe.copy()
+            base_nfe["_Nivel_4"] = base_nfe[col_plano_nfe].apply(normalizar_texto)
+            validos_nivel4 = base_nfe["_Nivel_4"].str.contains(r"^\d+\.\d+\.\d+\.\d+\s+-\s+", regex=True, na=False)
+            if validos_nivel4.sum() == 0:
+                avisos.append("NFe sem coluna útil de Plano de Contas; arquivo ignorado nesta análise.")
+            else:
+                base_nfe = base_nfe[validos_nivel4].copy()
+                base_nfe["_Nivel_4"] = base_nfe["_Nivel_4"].apply(normalizar_texto)
+                base_nfe["_Nivel_4_Norm"] = base_nfe["_Nivel_4"].apply(normalizar_chave_relacionamento)
+                base_nfe["_Fornecedor"] = base_nfe[col_fornecedor_nfe].apply(normalizar_texto)
+                base_nfe["_Documento"] = base_nfe[col_numero_nfe].apply(normalizar_texto) if col_numero_nfe else ""
+                base_nfe["Valor_Tratado"] = base_nfe[col_valor_nfe].apply(tratar_valor)
+                base_nfe["_Origem"] = "NFe"
+                bases.append(base_nfe)
+
+    if not bases:
+        return pd.DataFrame(), avisos
+
+    df_docs = pd.concat(bases, ignore_index=True)
+    df_docs = df_docs[df_docs["_Nivel_4"].astype(str).str.strip().ne("")].copy()
+    return df_docs, avisos
+
+
+def preparar_detalhe_documentos(df_docs_detalhe, total_ok):
+    if df_docs_detalhe.empty:
+        return pd.DataFrame(columns=["PLANO DE CONTAS", "FORNECEDOR", "ORIGEM", "DOCUMENTO", "VALOR", "STATUS"])
+
+    df = df_docs_detalhe.copy()
+    df["PLANO DE CONTAS"] = df["_Nivel_4"].apply(normalizar_texto)
+    df["FORNECEDOR"] = df["_Fornecedor"].apply(normalizar_texto)
+    df["ORIGEM"] = df["_Origem"].apply(normalizar_texto)
+    df["DOCUMENTO"] = df["_Documento"].apply(normalizar_texto)
+    df["VALOR"] = df["Valor_Tratado"].apply(float)
+    df["STATUS"] = "Encontrado" if total_ok else "Revisar"
+
+    return (
+        df.groupby(["PLANO DE CONTAS", "FORNECEDOR", "ORIGEM", "DOCUMENTO"], dropna=False, as_index=False)
+        .agg({"VALOR": "sum", "STATUS": "first"})
+        .sort_values(["VALOR", "PLANO DE CONTAS", "FORNECEDOR"], ascending=[False, True, True])
+    )
+
+
+def montar_quadro_lado_a_lado_documentos(df_cont, df_docs):
+    max_len = max(len(df_cont), len(df_docs), 1)
+    df_cont = df_cont.reset_index(drop=True).reindex(range(max_len))
+    df_docs = df_docs.reset_index(drop=True).reindex(range(max_len))
+
+    quadro_export = pd.DataFrame(
+        {
+            "CONTABIL - GRUPO DRE": df_cont["GRUPO DRE"] if "GRUPO DRE" in df_cont.columns else [""] * max_len,
+            "CONTABIL - HISTORICO": df_cont["HISTORICO"] if "HISTORICO" in df_cont.columns else [""] * max_len,
+            "CONTABIL - CONTA DEB": df_cont["CONTA DEB"] if "CONTA DEB" in df_cont.columns else [""] * max_len,
+            "CONTABIL - VALOR": df_cont["VALOR"] if "VALOR" in df_cont.columns else [0.0] * max_len,
+            "CONTABIL - STATUS": df_cont["STATUS"] if "STATUS" in df_cont.columns else [""] * max_len,
+            "DOCUMENTOS - PLANO DE CONTAS": df_docs["PLANO DE CONTAS"] if "PLANO DE CONTAS" in df_docs.columns else [""] * max_len,
+            "DOCUMENTOS - FORNECEDOR": df_docs["FORNECEDOR"] if "FORNECEDOR" in df_docs.columns else [""] * max_len,
+            "DOCUMENTOS - ORIGEM": df_docs["ORIGEM"] if "ORIGEM" in df_docs.columns else [""] * max_len,
+            "DOCUMENTOS - DOCUMENTO": df_docs["DOCUMENTO"] if "DOCUMENTO" in df_docs.columns else [""] * max_len,
+            "DOCUMENTOS - VALOR": df_docs["VALOR"] if "VALOR" in df_docs.columns else [0.0] * max_len,
+            "DOCUMENTOS - STATUS": df_docs["STATUS"] if "STATUS" in df_docs.columns else [""] * max_len,
+        }
+    )
+
+    quadro = quadro_export.copy()
+    quadro.columns = pd.MultiIndex.from_tuples([tuple(col.split(" - ", 1)) for col in quadro.columns])
+    return quadro, quadro_export
+
+
+def preparar_pendencias_documentos(df_docs, df_parametros):
+    if df_docs is None or df_docs.empty:
+        return pd.DataFrame(
+            columns=["PLANO DE CONTA Nº. 03", "CÓD. PLANO DE CONTA Nº. 04", "FORNECEDOR/EMITENTE", "ORIGENS", "VALOR", "QTD DOCUMENTOS", "STATUS"]
+        )
+
+    df = df_docs.copy()
+    parametros_existentes = set()
+    if df_parametros is not None and not df_parametros.empty and "codigo_plano_04" in df_parametros.columns:
+        parametros_existentes = set(
+            df_parametros["codigo_plano_04"].dropna().astype(str).map(normalizar_chave_relacionamento)
+        )
+
+    df["__parametrizado"] = df["_Nivel_4_Norm"].isin(parametros_existentes)
+    df_pend = df[~df["__parametrizado"]].copy()
+    if df_pend.empty:
+        return pd.DataFrame(
+            columns=["PLANO DE CONTA Nº. 03", "CÓD. PLANO DE CONTA Nº. 04", "FORNECEDOR/EMITENTE", "ORIGENS", "VALOR", "QTD DOCUMENTOS", "STATUS"]
+        )
+
+    juntar_unicos = lambda serie: " | ".join(
+        [item for item in pd.Series(serie).dropna().astype(str).map(normalizar_texto).unique() if item]
+    )
+
+    df_pend["VALOR"] = df_pend["Valor_Tratado"].apply(float)
+    df_pend = (
+        df_pend.groupby("_Nivel_4", dropna=False, as_index=False)
+        .agg(
+            **{
+                "FORNECEDOR/EMITENTE": ("_Fornecedor", juntar_unicos),
+                "ORIGENS": ("_Origem", juntar_unicos),
+                "VALOR": ("VALOR", "sum"),
+                "QTD DOCUMENTOS": ("_Nivel_4", "size"),
+            }
+        )
+        .rename(columns={"_Nivel_4": "CÓD. PLANO DE CONTA Nº. 04"})
+        .sort_values(["VALOR", "QTD DOCUMENTOS"], ascending=False)
+    )
+    df_pend.insert(0, "PLANO DE CONTA Nº. 03", "")
     df_pend["STATUS"] = "Sem parametrização"
     return df_pend
 
@@ -405,6 +620,94 @@ def exportar_excel_relatorio(nome_cliente, df_resumo, quadro_export):
         for row in wd.iter_rows(min_row=4):
             for cell in row:
                 if cell.column in [4, 8]:
+                    cell.number_format = 'R$ #,##0.00'
+
+    output.seek(0)
+    return output.getvalue()
+
+
+def exportar_excel_relatorio_documentos(nome_cliente, df_resumo, quadro_export):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_resumo.to_excel(writer, sheet_name="Resumo", index=False)
+        quadro_export.to_excel(writer, sheet_name="Detalhe", index=False, startrow=2)
+
+        wb = writer.book
+        azul = PatternFill("solid", fgColor="DCE6F1")
+        verde = PatternFill("solid", fgColor="E2F0D9")
+        cinza = PatternFill("solid", fgColor="F3F6F9")
+        titulo = PatternFill("solid", fgColor="2F5597")
+        branco = Font(color="FFFFFF", bold=True)
+        bold = Font(bold=True)
+        thin = Side(style="thin", color="D9E2F3")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        ws = wb["Resumo"]
+        ws.freeze_panes = "A2"
+        for cell in ws[1]:
+            cell.font = bold
+            cell.fill = cinza
+            cell.border = border
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.border = border
+
+        wd = wb["Detalhe"]
+        wd.freeze_panes = "A4"
+        wd.merge_cells("A1:K1")
+        wd["A1"] = f"NOME DO CLIENTE: {nome_cliente}"
+        wd["A1"].fill = titulo
+        wd["A1"].font = branco
+        wd["A1"].alignment = Alignment(horizontal="center", vertical="center")
+        wd.merge_cells("A2:E2")
+        wd.merge_cells("F2:K2")
+        wd["A2"] = "CONTABIL"
+        wd["F2"] = "DOCUMENTOS"
+        wd["A2"].fill = azul
+        wd["F2"].fill = verde
+        wd["A2"].font = bold
+        wd["F2"].font = bold
+        wd["A2"].alignment = Alignment(horizontal="center")
+        wd["F2"].alignment = Alignment(horizontal="center")
+
+        for cell in wd[3]:
+            cell.font = bold
+            cell.fill = cinza
+            cell.border = border
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        for row in wd.iter_rows(min_row=4):
+            for cell in row:
+                cell.border = border
+                if 1 <= cell.column <= 5:
+                    cell.fill = azul
+                elif 6 <= cell.column <= 11:
+                    cell.fill = verde
+
+        for row in wd.iter_rows(min_row=4):
+            for cell in row:
+                if cell.column in [5, 11]:
+                    valor = str(cell.value).lower() if cell.value is not None else ""
+                    if "bateu" in valor or "encontrado" in valor:
+                        cell.fill = PatternFill("solid", fgColor="E2F0D9")
+                    elif "diverg" in valor or "revis" in valor:
+                        cell.fill = PatternFill("solid", fgColor="FCE4D6")
+                    elif "não" in valor or "nao" in valor:
+                        cell.fill = PatternFill("solid", fgColor="FFF2CC")
+
+        for col in wd.columns:
+            largura = 0
+            letra = get_column_letter(col[0].column)
+            for cell in col:
+                try:
+                    largura = max(largura, len(str(cell.value)) if cell.value is not None else 0)
+                except Exception:
+                    pass
+            wd.column_dimensions[letra].width = min(max(largura + 2, 14), 35)
+
+        for row in wd.iter_rows(min_row=4):
+            for cell in row:
+                if cell.column in [4, 10]:
                     cell.number_format = 'R$ #,##0.00'
 
     output.seek(0)
@@ -551,6 +854,127 @@ def renderizar_analise_conferencia(analise):
     )
 
 
+def renderizar_analise_documentos(analise):
+    df_resultados = analise["df_resultados"].copy()
+    detalhes_por_conta = analise["detalhes_por_conta"]
+    empresa_id = analise["empresa_id"]
+    empresa_nome = analise["empresa_nome"]
+    col_conta_contabil = analise["col_conta_contabil"]
+    col_grupo_contabil = analise["col_grupo_contabil"]
+    col_historico_contabil = analise["col_historico_contabil"]
+
+    if df_resultados.empty:
+        st.info("Nenhuma conta com valor diferente de zero foi encontrada para comparar.")
+        return
+
+    st.markdown("---")
+    tot_batidos = len(df_resultados[df_resultados["STATUS"] == "🟢 Bateu"])
+    tot_divergentes = len(df_resultados[df_resultados["STATUS"] == "🔴 Divergente"])
+    tot_sem_map = len(df_resultados[df_resultados["STATUS"] == "⚠️ Sem parametrização"])
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🟢 Bateu", tot_batidos)
+    c2.metric("🔴 Divergências", tot_divergentes)
+    c3.metric("⚠️ Sem parametrização", tot_sem_map)
+
+    filtro_key = f"filtro_visao_documentos_{empresa_id}"
+    if filtro_key not in st.session_state:
+        st.session_state[filtro_key] = "Todos"
+
+    filtro = st.radio(
+        "Filtrar Visão:",
+        ["Todos", "🔴 Divergente", "⚠️ Sem parametrização", "🟢 Bateu"],
+        horizontal=True,
+        key=filtro_key,
+    )
+    df_filtrado = df_resultados
+    if filtro != "Todos":
+        df_filtrado = df_filtrado[df_filtrado["STATUS"] == filtro]
+
+    if df_filtrado.empty:
+        st.info("Nenhuma conta corresponde ao filtro selecionado.")
+        return
+
+    st.dataframe(
+        df_filtrado[
+            [
+                "Conta Débito",
+                "Grupo DRE (Contábil)",
+                "Valor Contábil",
+                "Valor Documentos",
+                "Diferença",
+                "STATUS",
+                "MOTIVO",
+            ]
+        ].style.format(
+            {
+                "Valor Contábil": "R$ {:,.2f}",
+                "Valor Documentos": "R$ {:,.2f}",
+                "Diferença": "R$ {:,.2f}",
+            }
+        ),
+        use_container_width=True,
+    )
+
+    st.markdown("---")
+    st.subheader("Quadro dos Lançamentos")
+    st.caption("Contábil e documentos fiscais lado a lado, com o total da conta selecionada.")
+
+    contas_visiveis = df_filtrado["Conta Débito"].tolist()
+    conta_key = f"conta_detalhe_documentos_{empresa_id}"
+    if conta_key not in st.session_state or st.session_state[conta_key] not in contas_visiveis:
+        st.session_state[conta_key] = contas_visiveis[0]
+
+    conta_detalhe = st.selectbox("Conta para detalhar", contas_visiveis, key=conta_key)
+    detalhe_atual = detalhes_por_conta.get(conta_detalhe, {"contabil": pd.DataFrame(), "documentos": pd.DataFrame()})
+    df_cont_detalhe = detalhe_atual["contabil"]
+    df_docs_detalhe = detalhe_atual["documentos"]
+    resumo_linha = df_filtrado[df_filtrado["Conta Débito"] == conta_detalhe].iloc[0]
+    total_ok = resumo_linha["STATUS"] == "🟢 Bateu"
+
+    st.markdown(f"### NOME DO CLIENTE: {empresa_nome}")
+    st.markdown("#### CONTABIL | DOCUMENTOS")
+
+    df_cont_rel = preparar_detalhe_contabil(
+        df_cont_detalhe, col_conta_contabil, col_grupo_contabil, col_historico_contabil, total_ok
+    )
+    df_docs_rel = preparar_detalhe_documentos(df_docs_detalhe, total_ok)
+    quadro_display, quadro_export = montar_quadro_lado_a_lado_documentos(df_cont_rel, df_docs_rel)
+
+    st.dataframe(
+        quadro_display.style.format(
+            {
+                ("CONTABIL", "VALOR"): "R$ {:,.2f}",
+                ("DOCUMENTOS", "VALOR"): "R$ {:,.2f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    resumo_export = df_resultados[
+        [
+            "Conta Débito",
+            "Grupo DRE (Contábil)",
+            "Valor Contábil",
+            "Valor Documentos",
+            "Diferença",
+            "STATUS",
+            "MOTIVO",
+            "QTD CONTÁBIL",
+            "QTD DOCUMENTOS",
+        ]
+    ].copy()
+    arquivo_excel = exportar_excel_relatorio_documentos(empresa_nome, resumo_export, quadro_export)
+    st.download_button(
+        "📥 Exportar relatório em Excel",
+        data=arquivo_excel,
+        file_name=f"conciliacao_documentos_{empresa_id}_{conta_detalhe}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+
 # --- 3. MENU LATERAL ---
 st.sidebar.title("Navegação")
 empresa_selecionada = st.sidebar.selectbox(
@@ -558,7 +982,7 @@ empresa_selecionada = st.sidebar.selectbox(
     list(EMPRESAS.keys()),
     format_func=lambda x: EMPRESAS[x],
 )
-menu = st.sidebar.radio("Ir para", ["Conciliação", "Parametrização"])
+menu = st.sidebar.radio("Ir para", ["Conciliação", "Parametrização", "Notas Fiscais"])
 
 
 # ==========================================
@@ -1029,3 +1453,403 @@ elif menu == "Parametrização":
                         st.error(f"Erro ao salvar parametrizações: {e}")
     elif fonte_cliente is not None and fonte_cliente.empty:
         st.warning("Não foi possível montar a lista de pendências porque a base do cliente está vazia.")
+
+
+# ==========================================
+# TELA 3: NOTAS FISCAIS X CONTÁBIL
+# ==========================================
+elif menu == "Notas Fiscais":
+    st.title(f"🧾 Notas Fiscais x Razão - {EMPRESAS[empresa_selecionada]}")
+    st.markdown("Comparativo entre o razão contábil e os relatórios de NFe/NFSe, com banco de parametrização separado.")
+
+    aba_comparativo, aba_parametrizacao = st.tabs(["Comparativo", "Parametrização"])
+
+    with aba_comparativo:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            file_contabil_docs = st.file_uploader("📂 Upload RAZÃO CONTÁBIL (.xlsx)", type=["xlsx", "xls"], key="contabil_documentos")
+        with c2:
+            file_nfse = st.file_uploader("📂 Upload NFSe (.xlsx)", type=["xlsx", "xls"], key="nfse_documentos")
+        with c3:
+            file_nfe = st.file_uploader("📂 Upload NFe (.xlsx)", type=["xlsx", "xls"], key="nfe_documentos")
+
+        if file_contabil_docs and (file_nfse or file_nfe):
+            if st.button("🚀 Iniciar Comparação de Notas", use_container_width=True, type="primary"):
+                with st.spinner("Lendo arquivos e cruzando com o banco de parametrização das notas..."):
+                    try:
+                        df_contabil = limpar_colunas(pd.read_excel(file_contabil_docs, engine="openpyxl"))
+                        df_nfse = limpar_colunas(pd.read_excel(file_nfse, engine="openpyxl")) if file_nfse else pd.DataFrame()
+                        df_nfe = limpar_colunas(pd.read_excel(file_nfe, engine="openpyxl")) if file_nfe else pd.DataFrame()
+
+                        col_conta_contabil = obter_coluna_flexivel(df_contabil, ["codic"])
+                        col_grupo_contabil = obter_coluna_flexivel(df_contabil, ["nomec"])
+                        col_valor_contabil = obter_coluna_flexivel(df_contabil, ["valdeb"])
+                        col_historico_contabil = obter_coluna_flexivel(df_contabil, ["historico_excel", "historico"])
+                        col_tipo_lan_contabil = obter_coluna_flexivel(df_contabil, ["tipo_lan"])
+
+                        faltantes = []
+                        if not col_conta_contabil:
+                            faltantes.append("codic")
+                        if not col_grupo_contabil:
+                            faltantes.append("nomec")
+                        if not col_valor_contabil:
+                            faltantes.append("valdeb")
+                        if faltantes:
+                            raise ValueError("O razão contábil não tem as colunas esperadas: " + ", ".join(faltantes))
+
+                        df_contabil["Valor_Tratado"] = df_contabil[col_valor_contabil].apply(tratar_valor)
+                        df_contabil["_Conta_Contabil"] = df_contabil[col_conta_contabil].apply(normalizar_chave)
+                        df_contabil["_Grupo_Contabil"] = df_contabil[col_grupo_contabil].apply(normalizar_texto)
+                        if col_tipo_lan_contabil:
+                            df_contabil = df_contabil[
+                                df_contabil[col_tipo_lan_contabil].apply(normalizar_texto).str.upper() == "D"
+                            ].copy()
+
+                        df_documentos, avisos_documentos = preparar_base_documentos_fiscais(df_nfe, df_nfse)
+                        for aviso in avisos_documentos:
+                            st.warning(aviso)
+
+                        if df_documentos.empty:
+                            raise ValueError("Nenhum lançamento válido de NFe/NFSe foi encontrado para comparar.")
+
+                        df_parametros = carregar_parametrizacao_notas_empresa(empresa_selecionada)
+                        if df_parametros.empty:
+                            st.warning(
+                                f"⚠️ Nenhuma regra encontrada no banco de notas para a empresa {EMPRESAS[empresa_selecionada]}. Vá na aba Parametrização."
+                            )
+                        else:
+                            df_parametros = limpar_colunas(df_parametros)
+                            if "conta_contabil" not in df_parametros.columns or "codigo_plano_04" not in df_parametros.columns:
+                                raise ValueError(
+                                    "A tabela parametrizacao_notas_fiscais precisa ter as colunas conta_contabil e codigo_plano_04."
+                                )
+
+                            df_parametros["conta_contabil"] = df_parametros["conta_contabil"].apply(normalizar_chave)
+                            df_parametros["codigo_plano_04"] = df_parametros["codigo_plano_04"].apply(normalizar_chave_relacionamento)
+
+                            df_cont_grp = (
+                                df_contabil.groupby("_Conta_Contabil")
+                                .agg(
+                                    Grupo_Contabil=("_Grupo_Contabil", "first"),
+                                    Valor_Contabil=("Valor_Tratado", "sum"),
+                                    Qtde_Contabil=("_Conta_Contabil", "size"),
+                                )
+                                .reset_index()
+                                .rename(columns={"_Conta_Contabil": "Conta Débito"})
+                            )
+
+                            resultados = []
+                            detalhes_por_conta = {}
+
+                            for _, row in df_cont_grp.iterrows():
+                                conta_contabil = str(row["Conta Débito"]).strip()
+                                valor_contabil = round(float(row["Valor_Contabil"]), 2)
+                                grupo_contabil = str(row["Grupo_Contabil"]).strip()
+                                qtde_contabil = int(row["Qtde_Contabil"])
+
+                                if valor_contabil == 0:
+                                    continue
+
+                                regras = df_parametros[df_parametros["conta_contabil"] == conta_contabil]
+                                df_cont_detalhe = df_contabil[df_contabil["_Conta_Contabil"] == conta_contabil].copy()
+
+                                if regras.empty:
+                                    resultados.append(
+                                        {
+                                            "Conta Débito": conta_contabil,
+                                            "Grupo DRE (Contábil)": grupo_contabil,
+                                            "Valor Contábil": valor_contabil,
+                                            "Valor Documentos": 0.0,
+                                            "Diferença": valor_contabil,
+                                            "QTD CONTÁBIL": qtde_contabil,
+                                            "QTD DOCUMENTOS": 0,
+                                            "STATUS": "⚠️ Sem parametrização",
+                                            "MOTIVO": "Conta sem regra cadastrada no banco de notas.",
+                                        }
+                                    )
+                                    detalhes_por_conta[conta_contabil] = {"contabil": df_cont_detalhe, "documentos": pd.DataFrame()}
+                                else:
+                                    codigos_04 = set(regras["codigo_plano_04"].tolist())
+                                    df_docs_match = df_documentos[df_documentos["_Nivel_4_Norm"].isin(codigos_04)].copy()
+                                    valor_documentos = round(df_docs_match["Valor_Tratado"].sum(), 2)
+                                    qtde_documentos = int(len(df_docs_match))
+                                    diff = round(valor_contabil - valor_documentos, 2)
+                                    status, motivo = classificar_diferenca(diff)
+
+                                    resultados.append(
+                                        {
+                                            "Conta Débito": conta_contabil,
+                                            "Grupo DRE (Contábil)": grupo_contabil,
+                                            "Valor Contábil": valor_contabil,
+                                            "Valor Documentos": valor_documentos,
+                                            "Diferença": diff,
+                                            "QTD CONTÁBIL": qtde_contabil,
+                                            "QTD DOCUMENTOS": qtde_documentos,
+                                            "STATUS": status,
+                                            "MOTIVO": motivo,
+                                        }
+                                    )
+                                    detalhes_por_conta[conta_contabil] = {"contabil": df_cont_detalhe, "documentos": df_docs_match}
+
+                            st.session_state["analise_documentos_fiscais"] = {
+                                "df_resultados": pd.DataFrame(resultados),
+                                "detalhes_por_conta": detalhes_por_conta,
+                                "empresa_id": empresa_selecionada,
+                                "empresa_nome": EMPRESAS[empresa_selecionada],
+                                "df_documentos": df_documentos,
+                                "col_conta_contabil": col_conta_contabil,
+                                "col_grupo_contabil": col_grupo_contabil,
+                                "col_historico_contabil": col_historico_contabil,
+                            }
+                            st.session_state["analise_documentos_assinatura"] = assinatura_arquivos(
+                                file_contabil_docs, file_nfse, file_nfe
+                            )
+                            st.session_state["analise_documentos_empresa"] = empresa_selecionada
+
+                    except Exception as e:
+                        st.error(f"❌ Erro ao comparar razão com NFe/NFSe. Detalhe: {e}")
+
+        analise_documentos = st.session_state.get("analise_documentos_fiscais")
+        assinatura_docs = assinatura_arquivos(file_contabil_docs, file_nfse, file_nfe) if file_contabil_docs and (file_nfse or file_nfe) else None
+        if (
+            analise_documentos
+            and st.session_state.get("analise_documentos_empresa") == empresa_selecionada
+            and st.session_state.get("analise_documentos_assinatura") == assinatura_docs
+        ):
+            renderizar_analise_documentos(analise_documentos)
+        elif file_contabil_docs and (file_nfse or file_nfe):
+            st.info("Clique em Iniciar Comparação de Notas para gerar a análise.")
+
+    with aba_parametrizacao:
+        st.subheader("Parametrização das Notas")
+        st.caption("Banco separado da conciliação antiga: Nível 03 + Nível 04 do cliente vinculados à conta contábil.")
+
+        df_banco_notas = carregar_parametrizacao_notas_empresa(empresa_selecionada)
+        df_seed_notas = carregar_seed_parametrizacao_notas()
+        tem_seed_empresa = not df_seed_notas[df_seed_notas["empresa_id"].astype(str) == str(empresa_selecionada)].empty
+
+        if tem_seed_empresa:
+            if st.button("📥 Carregar base padrão desta empresa no banco de notas", use_container_width=True):
+                try:
+                    dados_seed = df_seed_notas[df_seed_notas["empresa_id"].astype(str) == str(empresa_selecionada)].copy()
+                    registros = []
+                    for _, row in dados_seed.iterrows():
+                        codigo_04 = normalizar_texto(row.get("codigo_plano_04", ""))
+                        if not codigo_04:
+                            continue
+                        registros.append(
+                            {
+                                "empresa_id": str(empresa_selecionada),
+                                "plano_conta_nivel_03": normalizar_texto(row.get("plano_conta_nivel_03", "")),
+                                "codigo_plano_04": codigo_04,
+                                "conta_contabil": normalizar_chave(row.get("conta_contabil", "")),
+                            }
+                        )
+                    if registros:
+                        supabase.table("parametrizacao_notas_fiscais").upsert(
+                            registros,
+                            on_conflict="empresa_id,codigo_plano_04",
+                        ).execute()
+                    st.success("✅ Base padrão carregada no banco de notas.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao carregar base padrão: {e}")
+
+        filtro_consulta_notas = st.text_input(
+            "Buscar na parametrização de notas",
+            placeholder="Digite nível 03, nível 04 ou conta contábil...",
+            key="filtro_param_notas",
+        )
+        if filtro_consulta_notas:
+            termo = filtro_consulta_notas.strip().lower()
+            mascara = (
+                df_banco_notas["plano_conta_nivel_03"].astype(str).str.lower().str.contains(termo, na=False)
+                | df_banco_notas["codigo_plano_04"].astype(str).str.lower().str.contains(termo, na=False)
+                | df_banco_notas["conta_contabil"].astype(str).str.lower().str.contains(termo, na=False)
+            )
+            df_banco_notas_visivel = df_banco_notas[mascara].copy()
+        else:
+            df_banco_notas_visivel = df_banco_notas.copy()
+
+        if df_banco_notas_visivel.empty:
+            st.info("Nenhuma regra encontrada para o filtro atual.")
+        else:
+            st.dataframe(
+                df_banco_notas_visivel.rename(
+                    columns={
+                        "plano_conta_nivel_03": "PLANO DE CONTA Nº. 03",
+                        "codigo_plano_04": "CÓD. PLANO DE CONTA Nº. 04",
+                        "conta_contabil": "CONTA CONTÁBIL",
+                    }
+                )[["PLANO DE CONTA Nº. 03", "CÓD. PLANO DE CONTA Nº. 04", "CONTA CONTÁBIL"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        st.markdown("---")
+        st.subheader("Editar ou excluir parametrizações das notas")
+
+        df_gerenciar_notas = df_banco_notas.copy()
+        if df_gerenciar_notas.empty:
+            df_gerenciar_notas = pd.DataFrame(
+                columns=["id", "plano_conta_nivel_03", "codigo_plano_04", "conta_contabil", "EXCLUIR"]
+            )
+        else:
+            df_gerenciar_notas["EXCLUIR"] = False
+
+        with st.form("form_gerenciar_parametrizacao_notas"):
+            tabela_gerenciar_notas = st.data_editor(
+                df_gerenciar_notas,
+                num_rows="dynamic",
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "id": st.column_config.TextColumn("ID Supabase", disabled=True),
+                    "plano_conta_nivel_03": st.column_config.TextColumn("Plano de conta nº. 03", required=False),
+                    "codigo_plano_04": st.column_config.TextColumn("Cód. Plano de conta nº. 04", required=True),
+                    "conta_contabil": st.column_config.TextColumn("Conta contábil", required=True),
+                    "EXCLUIR": st.column_config.CheckboxColumn("Excluir"),
+                },
+            )
+            salvar_gerenciamento_notas = st.form_submit_button("💾 Salvar alterações das notas", type="primary")
+
+            if salvar_gerenciamento_notas:
+                try:
+                    dados_salvar = []
+                    ids_excluir = []
+                    vistos = set()
+
+                    for _, row in tabela_gerenciar_notas.iterrows():
+                        row_id = row.get("id")
+                        excluir = bool(row.get("EXCLUIR", False))
+                        plano_03 = normalizar_texto(row.get("plano_conta_nivel_03", ""))
+                        codigo_04 = normalizar_texto(row.get("codigo_plano_04", ""))
+                        conta = normalizar_chave(row.get("conta_contabil", ""))
+
+                        if pd.notna(row_id):
+                            row_id = str(row_id)
+
+                        if excluir:
+                            if row_id:
+                                ids_excluir.append(row_id)
+                            elif codigo_04:
+                                ids_excluir.append(f"{empresa_selecionada}:{codigo_04}")
+                            continue
+
+                        if not codigo_04 or not conta:
+                            continue
+
+                        chave = (str(empresa_selecionada), codigo_04)
+                        if chave in vistos:
+                            continue
+                        vistos.add(chave)
+
+                        dados_salvar.append(
+                            {
+                                "empresa_id": str(empresa_selecionada),
+                                "plano_conta_nivel_03": plano_03,
+                                "codigo_plano_04": codigo_04,
+                                "conta_contabil": conta,
+                            }
+                        )
+
+                    for item in ids_excluir:
+                        if ":" in item:
+                            _, codigo_04 = item.split(":", 1)
+                            supabase.table("parametrizacao_notas_fiscais").delete() \
+                                .eq("empresa_id", str(empresa_selecionada)) \
+                                .eq("codigo_plano_04", codigo_04) \
+                                .execute()
+                        else:
+                            supabase.table("parametrizacao_notas_fiscais").delete().eq("id", item).execute()
+
+                    if dados_salvar:
+                        supabase.table("parametrizacao_notas_fiscais").upsert(
+                            dados_salvar,
+                            on_conflict="empresa_id,codigo_plano_04",
+                        ).execute()
+
+                    st.success("✅ Parametrizações das notas atualizadas com sucesso!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao atualizar parametrizações das notas: {e}")
+
+        st.markdown("---")
+        st.subheader("Planos sem parametrização")
+        st.caption("Lista única dos planos nível 04 encontrados em NFe/NFSe e ainda não cadastrados no banco novo.")
+
+        fonte_documentos = st.session_state.get("analise_documentos_fiscais", {}).get("df_documentos")
+        if fonte_documentos is None or fonte_documentos.empty:
+            c1, c2 = st.columns(2)
+            with c1:
+                arquivo_nfse_param = st.file_uploader("📂 Upload NFSe para parametrização", type=["xlsx", "xls"], key="nfse_param")
+            with c2:
+                arquivo_nfe_param = st.file_uploader("📂 Upload NFe para parametrização", type=["xlsx", "xls"], key="nfe_param")
+
+            if arquivo_nfse_param or arquivo_nfe_param:
+                df_nfse_param = limpar_colunas(pd.read_excel(arquivo_nfse_param, engine="openpyxl")) if arquivo_nfse_param else pd.DataFrame()
+                df_nfe_param = limpar_colunas(pd.read_excel(arquivo_nfe_param, engine="openpyxl")) if arquivo_nfe_param else pd.DataFrame()
+                fonte_documentos, avisos_docs_param = preparar_base_documentos_fiscais(df_nfe_param, df_nfse_param)
+                for aviso in avisos_docs_param:
+                    st.warning(aviso)
+
+        if fonte_documentos is not None and not fonte_documentos.empty:
+            df_pendencias_docs = preparar_pendencias_documentos(fonte_documentos, df_banco_notas)
+            if df_pendencias_docs.empty:
+                st.success("Todos os planos desta base já estão parametrizados no banco de notas.")
+            else:
+                df_edicao_docs = df_pendencias_docs.copy()
+                df_edicao_docs["CONTA CONTÁBIL"] = ""
+
+                with st.form("form_param_pendencias_notas"):
+                    tabela_param_docs = st.data_editor(
+                        df_edicao_docs,
+                        num_rows="dynamic",
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "PLANO DE CONTA Nº. 03": st.column_config.TextColumn("Plano de conta nº. 03", required=False),
+                            "CÓD. PLANO DE CONTA Nº. 04": st.column_config.TextColumn("Cód. Plano de conta nº. 04", disabled=True),
+                            "CONTA CONTÁBIL": st.column_config.TextColumn("Conta contábil", required=False),
+                            "FORNECEDOR/EMITENTE": st.column_config.TextColumn("Fornecedor/Emitente", disabled=True),
+                            "ORIGENS": st.column_config.TextColumn("Origens", disabled=True),
+                            "VALOR": st.column_config.NumberColumn("Valor", disabled=True, format="R$ %.2f"),
+                            "QTD DOCUMENTOS": st.column_config.NumberColumn("Qtd documentos", disabled=True),
+                            "STATUS": st.column_config.TextColumn("Status", disabled=True),
+                        },
+                    )
+                    salvar_pendencias_notas = st.form_submit_button("💾 Salvar parametrizações pendentes das notas", type="primary")
+
+                    if salvar_pendencias_notas:
+                        try:
+                            novos_dados = []
+                            vistos = set()
+                            for _, row in tabela_param_docs.iterrows():
+                                plano_03 = normalizar_texto(row.get("PLANO DE CONTA Nº. 03", ""))
+                                codigo_04 = normalizar_texto(row.get("CÓD. PLANO DE CONTA Nº. 04", ""))
+                                conta = normalizar_chave(row.get("CONTA CONTÁBIL", ""))
+                                if not codigo_04 or not conta:
+                                    continue
+                                chave = (str(empresa_selecionada), codigo_04)
+                                if chave in vistos:
+                                    continue
+                                vistos.add(chave)
+                                novos_dados.append(
+                                    {
+                                        "empresa_id": str(empresa_selecionada),
+                                        "plano_conta_nivel_03": plano_03,
+                                        "codigo_plano_04": codigo_04,
+                                        "conta_contabil": conta,
+                                    }
+                                )
+                            if novos_dados:
+                                supabase.table("parametrizacao_notas_fiscais").upsert(
+                                    novos_dados,
+                                    on_conflict="empresa_id,codigo_plano_04",
+                                ).execute()
+                            st.success("✅ Parametrizações pendentes das notas salvas com sucesso!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao salvar parametrizações pendentes das notas: {e}")
+        elif fonte_documentos is not None and fonte_documentos.empty:
+            st.warning("Não foi possível montar a lista de pendências porque a base de documentos está vazia.")
