@@ -60,6 +60,7 @@ def carregar_empresas():
 
 EMPRESAS = carregar_empresas()
 ARQUIVO_SEED_PARAMETRIZACAO_NOTAS = Path(__file__).with_name("parametrizacao_notas_seed_401.csv")
+TABELA_PARAMETRIZACAO_NOTAS = "parametrizacao_notas_empresa"
 
 
 # --- 2. FUNÇÕES ÚTEIS ---
@@ -184,6 +185,34 @@ def obter_coluna_flexivel(df, candidatos):
     return None
 
 
+def erro_tabela_ausente(err):
+    if not err:
+        return False
+    if isinstance(err, dict):
+        codigo = str(err.get("code", "")).upper()
+        mensagem = str(err.get("message", "")).lower()
+        return codigo == "PGRST205" or "could not find the table" in mensagem
+    texto = str(err).lower()
+    return "pgrst205" in texto or "could not find the table" in texto
+
+
+def sql_tabela_parametrizacao_notas():
+    return f"""create table if not exists public.{TABELA_PARAMETRIZACAO_NOTAS} (
+    id bigserial primary key,
+    empresa_id text not null references public.empresas(id) on delete cascade,
+    plano_conta_nivel_03 text,
+    codigo_plano_04 text not null,
+    conta_contabil text not null,
+    created_at timestamptz not null default now()
+);
+
+create index if not exists idx_param_notas_empresa_conta
+    on public.{TABELA_PARAMETRIZACAO_NOTAS} (empresa_id, conta_contabil);
+
+create unique index if not exists idx_param_notas_empresa_codigo04_unique
+    on public.{TABELA_PARAMETRIZACAO_NOTAS} (empresa_id, codigo_plano_04);"""
+
+
 def colunas_existentes(df, colunas):
     return [coluna for coluna in colunas if coluna in df.columns]
 
@@ -289,13 +318,15 @@ def carregar_parametrizacao_empresa(empresa_id):
 def carregar_parametrizacao_notas_empresa(empresa_id):
     try:
         response = (
-            supabase.table("parametrizacao_notas_fiscais")
+            supabase.table(TABELA_PARAMETRIZACAO_NOTAS)
             .select("id, plano_conta_nivel_03, codigo_plano_04, conta_contabil")
             .eq("empresa_id", str(empresa_id))
             .execute()
         )
         df_banco = pd.DataFrame(response.data)
-    except Exception:
+        st.session_state["erro_parametrizacao_notas"] = None
+    except Exception as err:
+        st.session_state["erro_parametrizacao_notas"] = err
         df_banco = pd.DataFrame()
 
     if df_banco.empty:
@@ -1513,6 +1544,12 @@ elif menu == "Notas Fiscais":
                             raise ValueError("Nenhum lançamento válido de NFe/NFSe foi encontrado para comparar.")
 
                         df_parametros = carregar_parametrizacao_notas_empresa(empresa_selecionada)
+                        erro_tabela_notas = st.session_state.get("erro_parametrizacao_notas")
+                        if erro_tabela_ausente(erro_tabela_notas):
+                            st.error(
+                                f"A tabela `{TABELA_PARAMETRIZACAO_NOTAS}` ainda não existe no Supabase. Ela é separada da parametrização antiga."
+                            )
+                            st.code(sql_tabela_parametrizacao_notas(), language="sql")
                         if df_parametros.empty:
                             st.warning(
                                 f"⚠️ Nenhuma regra encontrada no banco de notas para a empresa {EMPRESAS[empresa_selecionada]}. Vá na aba Parametrização."
@@ -1521,7 +1558,7 @@ elif menu == "Notas Fiscais":
                             df_parametros = limpar_colunas(df_parametros)
                             if "conta_contabil" not in df_parametros.columns or "codigo_plano_04" not in df_parametros.columns:
                                 raise ValueError(
-                                    "A tabela parametrizacao_notas_fiscais precisa ter as colunas conta_contabil e codigo_plano_04."
+                                    f"A tabela {TABELA_PARAMETRIZACAO_NOTAS} precisa ter as colunas conta_contabil e codigo_plano_04."
                                 )
 
                             df_parametros["conta_contabil"] = df_parametros["conta_contabil"].apply(normalizar_chave)
@@ -1625,6 +1662,12 @@ elif menu == "Notas Fiscais":
         st.caption("Banco separado da conciliação antiga: Nível 03 + Nível 04 do cliente vinculados à conta contábil.")
 
         df_banco_notas = carregar_parametrizacao_notas_empresa(empresa_selecionada)
+        erro_tabela_notas = st.session_state.get("erro_parametrizacao_notas")
+        if erro_tabela_ausente(erro_tabela_notas):
+            st.error(
+                f"A tabela `{TABELA_PARAMETRIZACAO_NOTAS}` ainda não existe no Supabase. Eu não mexi no banco; essa estrutura precisa ser criada manualmente."
+            )
+            st.code(sql_tabela_parametrizacao_notas(), language="sql")
         df_seed_notas = carregar_seed_parametrizacao_notas()
         tem_seed_empresa = not df_seed_notas[df_seed_notas["empresa_id"].astype(str) == str(empresa_selecionada)].empty
 
@@ -1646,14 +1689,19 @@ elif menu == "Notas Fiscais":
                             }
                         )
                     if registros:
-                        supabase.table("parametrizacao_notas_fiscais").upsert(
+                        supabase.table(TABELA_PARAMETRIZACAO_NOTAS).upsert(
                             registros,
                             on_conflict="empresa_id,codigo_plano_04",
                         ).execute()
                     st.success("✅ Base padrão carregada no banco de notas.")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Erro ao carregar base padrão: {e}")
+                    if erro_tabela_ausente(e):
+                        st.error(
+                            f"A tabela `{TABELA_PARAMETRIZACAO_NOTAS}` ainda não existe no Supabase. Rode o SQL acima e tente de novo."
+                        )
+                    else:
+                        st.error(f"Erro ao carregar base padrão: {e}")
 
         filtro_consulta_notas = st.text_input(
             "Buscar na parametrização de notas",
@@ -1756,15 +1804,15 @@ elif menu == "Notas Fiscais":
                     for item in ids_excluir:
                         if ":" in item:
                             _, codigo_04 = item.split(":", 1)
-                            supabase.table("parametrizacao_notas_fiscais").delete() \
+                            supabase.table(TABELA_PARAMETRIZACAO_NOTAS).delete() \
                                 .eq("empresa_id", str(empresa_selecionada)) \
                                 .eq("codigo_plano_04", codigo_04) \
                                 .execute()
                         else:
-                            supabase.table("parametrizacao_notas_fiscais").delete().eq("id", item).execute()
+                            supabase.table(TABELA_PARAMETRIZACAO_NOTAS).delete().eq("id", item).execute()
 
                     if dados_salvar:
-                        supabase.table("parametrizacao_notas_fiscais").upsert(
+                        supabase.table(TABELA_PARAMETRIZACAO_NOTAS).upsert(
                             dados_salvar,
                             on_conflict="empresa_id,codigo_plano_04",
                         ).execute()
@@ -1772,7 +1820,12 @@ elif menu == "Notas Fiscais":
                     st.success("✅ Parametrizações das notas atualizadas com sucesso!")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Erro ao atualizar parametrizações das notas: {e}")
+                    if erro_tabela_ausente(e):
+                        st.error(
+                            f"A tabela `{TABELA_PARAMETRIZACAO_NOTAS}` ainda não existe no Supabase. Rode o SQL acima e tente de novo."
+                        )
+                    else:
+                        st.error(f"Erro ao atualizar parametrizações das notas: {e}")
 
         st.markdown("---")
         st.subheader("Planos sem parametrização")
@@ -1843,13 +1896,18 @@ elif menu == "Notas Fiscais":
                                     }
                                 )
                             if novos_dados:
-                                supabase.table("parametrizacao_notas_fiscais").upsert(
+                                supabase.table(TABELA_PARAMETRIZACAO_NOTAS).upsert(
                                     novos_dados,
                                     on_conflict="empresa_id,codigo_plano_04",
                                 ).execute()
                             st.success("✅ Parametrizações pendentes das notas salvas com sucesso!")
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Erro ao salvar parametrizações pendentes das notas: {e}")
+                            if erro_tabela_ausente(e):
+                                st.error(
+                                    f"A tabela `{TABELA_PARAMETRIZACAO_NOTAS}` ainda não existe no Supabase. Rode o SQL acima e tente de novo."
+                                )
+                            else:
+                                st.error(f"Erro ao salvar parametrizações pendentes das notas: {e}")
         elif fonte_documentos is not None and fonte_documentos.empty:
             st.warning("Não foi possível montar a lista de pendências porque a base de documentos está vazia.")

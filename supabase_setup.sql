@@ -21,7 +21,7 @@ create index if not exists idx_parametrizacao_contas_empresa_conta
 create unique index if not exists idx_parametrizacao_contas_empresa_fornecedor_unique
     on public.parametrizacao_contas (empresa_id, fornecedor_cliente);
 
-create table if not exists public.parametrizacao_notas_fiscais (
+create table if not exists public.parametrizacao_notas_empresa (
     id bigserial primary key,
     empresa_id text not null references public.empresas(id) on delete cascade,
     plano_conta_nivel_03 text,
@@ -31,10 +31,10 @@ create table if not exists public.parametrizacao_notas_fiscais (
 );
 
 create index if not exists idx_parametrizacao_notas_empresa_conta
-    on public.parametrizacao_notas_fiscais (empresa_id, conta_contabil);
+    on public.parametrizacao_notas_empresa (empresa_id, conta_contabil);
 
 create unique index if not exists idx_parametrizacao_notas_empresa_codigo04_unique
-    on public.parametrizacao_notas_fiscais (empresa_id, codigo_plano_04);
+    on public.parametrizacao_notas_empresa (empresa_id, codigo_plano_04);
 
 insert into public.empresas (id, nome, ativo) values
     ('401', '401 - SST', true),
