@@ -276,6 +276,13 @@ def montar_historico_exportacao(*partes):
     return " - ".join(saida)
 
 
+def interpretar_checkbox(val):
+    if isinstance(val, bool):
+        return val
+    texto = normalizar_nome_coluna(val)
+    return texto in {"sim", "s", "true", "1", "x", "excluir"}
+
+
 def classificar_diferenca(diff):
     if abs(diff) <= 0.01:
         return "🟢 Bateu", "Os valores fecham certinho entre contábil e cliente."
@@ -702,6 +709,55 @@ def exportar_modelo_parametrizacao_notas(nome_empresa, df_modelo):
     return output.getvalue()
 
 
+def exportar_modelo_parametrizacao_lote(nome_empresa, titulo, df_modelo):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_export = df_modelo.copy()
+        df_export.to_excel(writer, sheet_name="Modelo", index=False, startrow=2)
+
+        wb = writer.book
+        ws = wb["Modelo"]
+
+        azul = PatternFill("solid", fgColor="DCE6F1")
+        cinza = PatternFill("solid", fgColor="F3F6F9")
+        titulo_fill = PatternFill("solid", fgColor="2F5597")
+        branco = Font(color="FFFFFF", bold=True)
+        bold = Font(bold=True)
+        thin = Side(style="thin", color="D9E2F3")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(len(df_export.columns), 1))
+        ws["A1"] = f"{titulo} - {nome_empresa}"
+        ws["A1"].fill = titulo_fill
+        ws["A1"].font = branco
+        ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+        ws["A2"] = "Use a coluna EXCLUIR com Sim/True/1 para remoção em lote. Linhas sem chave ou conta são ignoradas."
+        ws["A2"].font = Font(italic=True)
+
+        ws.freeze_panes = "A4"
+        for cell in ws[3]:
+            cell.font = bold
+            cell.fill = azul
+            cell.border = border
+
+        for row in ws.iter_rows(min_row=4):
+            for cell in row:
+                cell.border = border
+                cell.fill = cinza
+
+        for col in ws.columns:
+            largura = 0
+            letra = get_column_letter(col[0].column)
+            for cell in col:
+                try:
+                    largura = max(largura, len(str(cell.value)) if cell.value is not None else 0)
+                except Exception:
+                    pass
+            ws.column_dimensions[letra].width = min(max(largura + 2, 18), 42)
+
+    return output.getvalue()
+
+
 def preparar_registros_parametrizacao_notas(df_parametrizacao, empresa_id):
     novos_dados = []
     vistos = set()
@@ -794,6 +850,145 @@ def importar_modelo_parametrizacao_notas(arquivo):
         }
     )
     return df_normalizado.dropna(how="all").fillna("")
+
+
+def importar_modelo_parametrizacao_dre_lote(arquivo):
+    df_importado = limpar_colunas(pd.read_excel(arquivo, engine="openpyxl"))
+    col_conta = obter_coluna_flexivel(df_importado, ["CONTA DÉBITO", "CONTA DEBITO"])
+    col_codigo = obter_coluna_flexivel(df_importado, ["CÓD. PLANO 04", "COD. PLANO 04", "CÓD. PLANO DE CONTA Nº. 04"])
+    col_excluir = obter_coluna_flexivel(df_importado, ["EXCLUIR", "EXCLUIR?"])
+
+    faltando = []
+    if not col_conta:
+        faltando.append("CONTA DÉBITO")
+    if not col_codigo:
+        faltando.append("CÓD. PLANO 04")
+    if faltando:
+        raise ValueError(f"A planilha importada não contém as colunas obrigatórias: {', '.join(faltando)}.")
+
+    df_normalizado = pd.DataFrame(
+        {
+            "CONTA DÉBITO": df_importado[col_conta],
+            "CÓD. PLANO 04": df_importado[col_codigo],
+            "EXCLUIR": df_importado[col_excluir] if col_excluir else False,
+        }
+    )
+    return df_normalizado.dropna(how="all").fillna("")
+
+
+def salvar_parametrizacao_dre_lote(df_parametrizacao, empresa_id):
+    dados_salvar = []
+    chaves_excluir = []
+    vistos = set()
+
+    for _, row in df_parametrizacao.iterrows():
+        conta = normalizar_chave(row.get("CONTA DÉBITO", ""))
+        fornecedor = normalizar_texto(row.get("CÓD. PLANO 04", ""))
+        excluir = interpretar_checkbox(row.get("EXCLUIR", False))
+
+        if excluir and fornecedor:
+            chaves_excluir.append(fornecedor)
+            continue
+        if not conta or not fornecedor:
+            continue
+
+        chave = (str(empresa_id), fornecedor)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        dados_salvar.append(
+            {
+                "empresa_id": str(empresa_id),
+                "conta_contabil": conta,
+                "fornecedor_cliente": fornecedor,
+            }
+        )
+
+    for fornecedor in dict.fromkeys(chaves_excluir):
+        supabase.table("parametrizacao_contas").delete() \
+            .eq("empresa_id", str(empresa_id)) \
+            .eq("fornecedor_cliente", fornecedor) \
+            .execute()
+
+    if dados_salvar:
+        supabase.table("parametrizacao_contas").upsert(
+            dados_salvar,
+            on_conflict="empresa_id,fornecedor_cliente",
+        ).execute()
+    return len(dados_salvar), len(dict.fromkeys(chaves_excluir))
+
+
+def importar_modelo_parametrizacao_notas_lote(arquivo):
+    df_importado = limpar_colunas(pd.read_excel(arquivo, engine="openpyxl"))
+    col_plano_03 = obter_coluna_flexivel(df_importado, ["PLANO DE CONTA Nº. 03", "PLANO DE CONTA N 03"])
+    col_codigo = obter_coluna_flexivel(
+        df_importado,
+        ["CÓD. PLANO DE CONTA Nº. 04", "COD. PLANO DE CONTA Nº. 04", "CÓD. PLANO 04"],
+    )
+    col_conta = obter_coluna_flexivel(df_importado, ["CONTA CONTÁBIL", "CONTA CONTABIL"])
+    col_excluir = obter_coluna_flexivel(df_importado, ["EXCLUIR", "EXCLUIR?"])
+
+    faltando = []
+    if not col_codigo:
+        faltando.append("CÓD. PLANO DE CONTA Nº. 04")
+    if not col_conta:
+        faltando.append("CONTA CONTÁBIL")
+    if faltando:
+        raise ValueError(f"A planilha importada não contém as colunas obrigatórias: {', '.join(faltando)}.")
+
+    df_normalizado = pd.DataFrame(
+        {
+            "PLANO DE CONTA Nº. 03": df_importado[col_plano_03] if col_plano_03 else "",
+            "CÓD. PLANO DE CONTA Nº. 04": df_importado[col_codigo],
+            "CONTA CONTÁBIL": df_importado[col_conta],
+            "EXCLUIR": df_importado[col_excluir] if col_excluir else False,
+        }
+    )
+    return df_normalizado.dropna(how="all").fillna("")
+
+
+def salvar_parametrizacao_notas_lote(df_parametrizacao, empresa_id):
+    dados_salvar = []
+    chaves_excluir = []
+    vistos = set()
+
+    for _, row in df_parametrizacao.iterrows():
+        plano_03 = normalizar_texto(row.get("PLANO DE CONTA Nº. 03", ""))
+        codigo_04 = normalizar_texto(row.get("CÓD. PLANO DE CONTA Nº. 04", ""))
+        conta = normalizar_chave(row.get("CONTA CONTÁBIL", ""))
+        excluir = interpretar_checkbox(row.get("EXCLUIR", False))
+
+        if excluir and codigo_04:
+            chaves_excluir.append(codigo_04)
+            continue
+        if not codigo_04 or not conta:
+            continue
+
+        chave = (str(empresa_id), codigo_04)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        dados_salvar.append(
+            {
+                "empresa_id": str(empresa_id),
+                "plano_conta_nivel_03": plano_03,
+                "codigo_plano_04": codigo_04,
+                "conta_contabil": conta,
+            }
+        )
+
+    for codigo_04 in dict.fromkeys(chaves_excluir):
+        supabase.table(TABELA_PARAMETRIZACAO_NOTAS).delete() \
+            .eq("empresa_id", str(empresa_id)) \
+            .eq("codigo_plano_04", codigo_04) \
+            .execute()
+
+    if dados_salvar:
+        supabase.table(TABELA_PARAMETRIZACAO_NOTAS).upsert(
+            dados_salvar,
+            on_conflict="empresa_id,codigo_plano_04",
+        ).execute()
+    return len(dados_salvar), len(dict.fromkeys(chaves_excluir))
 
 
 def salvar_parametrizacao_notas(df_parametrizacao, empresa_id):
@@ -1864,6 +2059,54 @@ if menu == "Dre":
                     st.error(f"Erro ao atualizar parametrizações: {e}")
 
         st.markdown("---")
+        st.subheader("Importação em lote")
+        st.caption("Baixe um modelo da base atual, ajuste livremente e reimporte para incluir, atualizar ou excluir em lote.")
+
+        df_modelo_dre = df_banco.rename(
+            columns={
+                "conta_contabil": "CONTA DÉBITO",
+                "fornecedor_cliente": "CÓD. PLANO 04",
+            }
+        )[["CONTA DÉBITO", "CÓD. PLANO 04"]].copy() if not df_banco.empty else pd.DataFrame(columns=["CONTA DÉBITO", "CÓD. PLANO 04"])
+        df_modelo_dre["EXCLUIR"] = False
+        arquivo_modelo_dre = exportar_modelo_parametrizacao_lote(
+            EMPRESAS[empresa_selecionada],
+            "MODELO DE PARAMETRIZACAO DRE",
+            df_modelo_dre,
+        )
+
+        col_download_lote_dre, col_import_lote_dre = st.columns([1, 1])
+        with col_download_lote_dre:
+            st.download_button(
+                "⬇️ Baixar modelo do banco",
+                data=arquivo_modelo_dre,
+                file_name=f"modelo_parametrizacao_dre_{empresa_selecionada}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        with col_import_lote_dre:
+            with st.form(f"form_importacao_lote_dre_{empresa_selecionada}"):
+                arquivo_lote_dre = st.file_uploader(
+                    "📥 Importar planilha em lote",
+                    type=["xlsx", "xls"],
+                    key=f"importacao_lote_dre_{empresa_selecionada}",
+                )
+                importar_lote_dre = st.form_submit_button("📤 Processar importação em lote")
+
+            if importar_lote_dre:
+                try:
+                    if not arquivo_lote_dre:
+                        raise ValueError("Selecione a planilha em lote antes de importar.")
+                    df_lote_dre = importar_modelo_parametrizacao_dre_lote(arquivo_lote_dre)
+                    total_incluidos, total_excluidos = salvar_parametrizacao_dre_lote(df_lote_dre, empresa_selecionada)
+                    st.success(
+                        f"✅ Importação concluída. Inclusões/atualizações: {total_incluidos}. Exclusões: {total_excluidos}."
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao importar parametrização em lote do DRE: {e}")
+
+        st.markdown("---")
         st.subheader("Fornecedores sem parametrização")
         st.caption("Lista automática dos lançamentos do cliente que ainda não têm de/para cadastrado.")
 
@@ -2404,6 +2647,66 @@ elif menu == "Notas Fiscais":
                         )
                     else:
                         st.error(f"Erro ao atualizar parametrizações das notas: {e}")
+
+        st.markdown("---")
+        st.subheader("Importação em lote das notas")
+        st.caption("Baixe a base atual, ajuste livremente e reimporte para incluir, atualizar ou excluir em lote.")
+
+        df_modelo_notas = df_banco_notas.rename(
+            columns={
+                "plano_conta_nivel_03": "PLANO DE CONTA Nº. 03",
+                "codigo_plano_04": "CÓD. PLANO DE CONTA Nº. 04",
+                "conta_contabil": "CONTA CONTÁBIL",
+            }
+        )[["PLANO DE CONTA Nº. 03", "CÓD. PLANO DE CONTA Nº. 04", "CONTA CONTÁBIL"]].copy() if not df_banco_notas.empty else pd.DataFrame(
+            columns=["PLANO DE CONTA Nº. 03", "CÓD. PLANO DE CONTA Nº. 04", "CONTA CONTÁBIL"]
+        )
+        df_modelo_notas["EXCLUIR"] = False
+        arquivo_modelo_notas_lote = exportar_modelo_parametrizacao_lote(
+            EMPRESAS[empresa_selecionada],
+            "MODELO DE PARAMETRIZACAO NOTAS",
+            df_modelo_notas,
+        )
+
+        col_download_lote_notas, col_import_lote_notas = st.columns([1, 1])
+        with col_download_lote_notas:
+            st.download_button(
+                "⬇️ Baixar modelo do banco",
+                data=arquivo_modelo_notas_lote,
+                file_name=f"modelo_parametrizacao_notas_banco_{empresa_selecionada}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        with col_import_lote_notas:
+            with st.form(f"form_importacao_lote_notas_{empresa_selecionada}"):
+                arquivo_lote_notas = st.file_uploader(
+                    "📥 Importar planilha em lote",
+                    type=["xlsx", "xls"],
+                    key=f"importacao_lote_notas_{empresa_selecionada}",
+                )
+                importar_lote_notas = st.form_submit_button("📤 Processar importação em lote")
+
+            if importar_lote_notas:
+                try:
+                    if not arquivo_lote_notas:
+                        raise ValueError("Selecione a planilha em lote antes de importar.")
+                    df_lote_notas = importar_modelo_parametrizacao_notas_lote(arquivo_lote_notas)
+                    total_incluidos, total_excluidos = salvar_parametrizacao_notas_lote(df_lote_notas, empresa_selecionada)
+                    st.success(
+                        f"✅ Importação concluída. Inclusões/atualizações: {total_incluidos}. Exclusões: {total_excluidos}."
+                    )
+                    st.rerun()
+                except Exception as e:
+                    if erro_tabela_ausente(e):
+                        st.error(
+                            f"A tabela `{TABELA_PARAMETRIZACAO_NOTAS}` ainda não existe no Supabase. Rode o SQL acima e tente de novo."
+                        )
+                    elif erro_rls_policy(e):
+                        st.error(
+                            "O Supabase bloqueou a gravação por RLS. Para salvar pela aplicação, configure `SUPABASE_SERVICE_ROLE_KEY` no Streamlit Cloud ou crie uma policy de insert/update para essa tabela."
+                        )
+                    else:
+                        st.error(f"Erro ao importar parametrização em lote das notas: {e}")
 
         st.markdown("---")
         st.subheader("Planos sem parametrização")
