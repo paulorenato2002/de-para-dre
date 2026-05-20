@@ -117,6 +117,11 @@ def normalizar_nome_coluna(val):
     return re.sub(r"\s+", " ", texto).strip()
 
 
+def status_excluido(val):
+    texto = normalizar_nome_coluna(val)
+    return "excluid" in texto
+
+
 def aplicar_filtros_cliente(df, col_plano_01, col_nivel4):
     if df is None or df.empty:
         return df
@@ -412,6 +417,7 @@ def preparar_base_documentos_fiscais(df_nfe, df_nfse):
         col_valor_nfse = obter_coluna_flexivel(df_nfse, ["Vr. Total"])
         col_fornecedor_nfse = obter_coluna_flexivel(df_nfse, ["Fornecedor"])
         col_numero_nfse = obter_coluna_flexivel(df_nfse, ["Nr. Nota"])
+        col_situacao_nfse = obter_coluna_flexivel(df_nfse, ["Situação", "Situacao"])
 
         faltantes_nfse = []
         if not col_plano_nfse:
@@ -425,6 +431,8 @@ def preparar_base_documentos_fiscais(df_nfe, df_nfse):
             avisos.append("NFSe sem colunas esperadas: " + ", ".join(faltantes_nfse))
         else:
             base_nfse = df_nfse.copy()
+            if col_situacao_nfse:
+                base_nfse = base_nfse[~base_nfse[col_situacao_nfse].apply(status_excluido)].copy()
             base_nfse["_Nivel_4"] = base_nfse[col_plano_nfse].apply(normalizar_texto)
             base_nfse["_Nivel_4_Norm"] = base_nfse["_Nivel_4"].apply(normalizar_chave_relacionamento)
             base_nfse["_Fornecedor"] = base_nfse[col_fornecedor_nfse].apply(normalizar_texto)
@@ -503,9 +511,12 @@ def calcular_totais_relatorios_notas(arquivo_contabil, arquivo_nfse, arquivo_nfe
         arquivo_nfse.seek(0)
         df_nfse = limpar_colunas(pd.read_excel(arquivo_nfse, engine="openpyxl"))
         col_valor_nfse = obter_coluna_flexivel(df_nfse, ["Vr. Total"])
+        col_situacao_nfse = obter_coluna_flexivel(df_nfse, ["Situação", "Situacao"])
         if not col_valor_nfse:
             avisos.append("NFSe sem coluna `Vr. Total` para montar o quadro geral.")
         else:
+            if col_situacao_nfse:
+                df_nfse = df_nfse[~df_nfse[col_situacao_nfse].apply(status_excluido)].copy()
             totais["nfse"] = round(df_nfse[col_valor_nfse].apply(tratar_valor).sum(), 2)
         arquivo_nfse.seek(0)
 
@@ -1136,6 +1147,15 @@ def renderizar_analise_documentos(analise):
     if df_filtrado.empty:
         st.info("Nenhuma conta corresponde ao filtro selecionado.")
         return
+
+    total_contabil_filtrado = round(df_filtrado["Valor Contábil"].sum(), 2)
+    total_documentos_filtrado = round(df_filtrado["Valor Documentos"].sum(), 2)
+    diferenca_filtrada = round(total_contabil_filtrado - total_documentos_filtrado, 2)
+
+    t1, t2, t3 = st.columns(3)
+    t1.metric("Total Contábil", formatar_moeda(total_contabil_filtrado))
+    t2.metric("Total Documentos", formatar_moeda(total_documentos_filtrado))
+    t3.metric("Diferença do Filtro", formatar_moeda(diferenca_filtrada))
 
     st.dataframe(
         df_filtrado[
