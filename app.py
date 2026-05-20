@@ -475,6 +475,54 @@ def preparar_base_documentos_fiscais(df_nfe, df_nfse):
     return df_docs, avisos
 
 
+def calcular_totais_relatorios_notas(arquivo_contabil, arquivo_nfse, arquivo_nfe):
+    totais = {
+        "contabil": 0.0,
+        "nfse": 0.0,
+        "nfe": 0.0,
+    }
+    avisos = []
+
+    if arquivo_contabil:
+        arquivo_contabil.seek(0)
+        df_contabil = limpar_colunas(pd.read_excel(arquivo_contabil, engine="openpyxl"))
+        col_valor_contabil = obter_coluna_flexivel(df_contabil, ["valdeb"])
+        col_tipo_lan_contabil = obter_coluna_flexivel(df_contabil, ["tipo_lan"])
+
+        if not col_valor_contabil:
+            avisos.append("Razão contábil sem coluna `valdeb` para montar o quadro geral.")
+        else:
+            if col_tipo_lan_contabil:
+                df_contabil = df_contabil[
+                    df_contabil[col_tipo_lan_contabil].apply(normalizar_texto).str.upper() == "D"
+                ].copy()
+            totais["contabil"] = round(df_contabil[col_valor_contabil].apply(tratar_valor).sum(), 2)
+        arquivo_contabil.seek(0)
+
+    if arquivo_nfse:
+        arquivo_nfse.seek(0)
+        df_nfse = limpar_colunas(pd.read_excel(arquivo_nfse, engine="openpyxl"))
+        col_valor_nfse = obter_coluna_flexivel(df_nfse, ["Vr. Total"])
+        if not col_valor_nfse:
+            avisos.append("NFSe sem coluna `Vr. Total` para montar o quadro geral.")
+        else:
+            totais["nfse"] = round(df_nfse[col_valor_nfse].apply(tratar_valor).sum(), 2)
+        arquivo_nfse.seek(0)
+
+    if arquivo_nfe:
+        arquivo_nfe.seek(0)
+        df_nfe = limpar_colunas(pd.read_excel(arquivo_nfe, engine="openpyxl"))
+        col_valor_nfe = obter_coluna_flexivel(df_nfe, ["Vr. Nota"])
+        if not col_valor_nfe:
+            avisos.append("NFe sem coluna `Vr. Nota` para montar o quadro geral.")
+        else:
+            totais["nfe"] = round(df_nfe[col_valor_nfe].apply(tratar_valor).sum(), 2)
+        arquivo_nfe.seek(0)
+
+    totais["documentos"] = round(totais["nfse"] + totais["nfe"], 2)
+    return totais, avisos
+
+
 def preparar_detalhe_documentos(df_docs_detalhe, total_ok):
     if df_docs_detalhe.empty:
         return pd.DataFrame(columns=["PLANO DE CONTAS", "FORNECEDOR", "ORIGEM", "DOCUMENTO", "VALOR", "STATUS"])
@@ -1655,6 +1703,27 @@ elif menu == "Notas Fiscais":
             file_nfse = st.file_uploader("📂 Upload NFSe (.xlsx)", type=["xlsx", "xls"], key="nfse_documentos")
         with c3:
             file_nfe = st.file_uploader("📂 Upload NFe (.xlsx)", type=["xlsx", "xls"], key="nfe_documentos")
+
+        if file_contabil_docs or file_nfse or file_nfe:
+            try:
+                totais_relatorios, avisos_totais = calcular_totais_relatorios_notas(
+                    file_contabil_docs,
+                    file_nfse,
+                    file_nfe,
+                )
+
+                st.markdown("### Quadro Geral de Totais")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Contábil", formatar_moeda(totais_relatorios["contabil"]))
+                m2.metric("NFSe", formatar_moeda(totais_relatorios["nfse"]))
+                m3.metric("NFe", formatar_moeda(totais_relatorios["nfe"]))
+                m4.metric("NFSe + NFe", formatar_moeda(totais_relatorios["documentos"]))
+                st.caption("Resumo rápido dos valores totais dos arquivos enviados. No contábil, o total considera apenas `tipo_lan = D` quando essa coluna existir.")
+
+                for aviso_total in avisos_totais:
+                    st.warning(aviso_total)
+            except Exception as e:
+                st.warning(f"Não foi possível montar o quadro geral de totais: {e}")
 
         if file_contabil_docs and (file_nfse or file_nfe):
             if st.button("🚀 Iniciar Comparação de Notas", use_container_width=True, type="primary"):
