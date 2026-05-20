@@ -560,6 +560,124 @@ def preparar_pendencias_documentos(df_docs, df_parametros):
     return df_pend
 
 
+def exportar_modelo_parametrizacao_notas(nome_empresa, df_modelo):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_export = df_modelo.copy()
+        df_export.to_excel(writer, sheet_name="Modelo", index=False, startrow=2)
+
+        wb = writer.book
+        ws = wb["Modelo"]
+
+        azul = PatternFill("solid", fgColor="DCE6F1")
+        cinza = PatternFill("solid", fgColor="F3F6F9")
+        titulo = PatternFill("solid", fgColor="2F5597")
+        branco = Font(color="FFFFFF", bold=True)
+        bold = Font(bold=True)
+        thin = Side(style="thin", color="D9E2F3")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(len(df_export.columns), 1))
+        ws["A1"] = f"MODELO DE PARAMETRIZACAO - {nome_empresa}"
+        ws["A1"].fill = titulo
+        ws["A1"].font = branco
+        ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+        ws["A2"] = "Preencha apenas a coluna CONTA CONTÁBIL e reimporte a planilha no sistema."
+        ws["A2"].font = Font(italic=True)
+
+        ws.freeze_panes = "A4"
+        for cell in ws[3]:
+            cell.font = bold
+            cell.fill = azul
+            cell.border = border
+
+        for row in ws.iter_rows(min_row=4):
+            for cell in row:
+                cell.border = border
+                if cell.column != 1:
+                    cell.fill = cinza
+
+        for col in ws.columns:
+            largura = 0
+            letra = get_column_letter(col[0].column)
+            for cell in col:
+                try:
+                    largura = max(largura, len(str(cell.value)) if cell.value is not None else 0)
+                except Exception:
+                    pass
+            ws.column_dimensions[letra].width = min(max(largura + 2, 18), 42)
+
+    return output.getvalue()
+
+
+def preparar_registros_parametrizacao_notas(df_parametrizacao, empresa_id):
+    novos_dados = []
+    vistos = set()
+    if df_parametrizacao is None or df_parametrizacao.empty:
+        return novos_dados
+
+    for _, row in df_parametrizacao.iterrows():
+        plano_03 = normalizar_texto(row.get("PLANO DE CONTA Nº. 03", ""))
+        codigo_04 = normalizar_texto(row.get("CÓD. PLANO DE CONTA Nº. 04", ""))
+        conta = normalizar_chave(row.get("CONTA CONTÁBIL", ""))
+        if not codigo_04 or not conta:
+            continue
+        chave = (str(empresa_id), codigo_04)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        novos_dados.append(
+            {
+                "empresa_id": str(empresa_id),
+                "plano_conta_nivel_03": plano_03,
+                "codigo_plano_04": codigo_04,
+                "conta_contabil": conta,
+            }
+        )
+    return novos_dados
+
+
+def importar_modelo_parametrizacao_notas(arquivo):
+    df_importado = limpar_colunas(pd.read_excel(arquivo, engine="openpyxl"))
+    colunas_mapeadas = {
+        "CONTA CONTÁBIL": obter_coluna_flexivel(df_importado, ["CONTA CONTÁBIL", "CONTA CONTABIL"]),
+        "PLANO DE CONTA Nº. 03": obter_coluna_flexivel(df_importado, ["PLANO DE CONTA Nº. 03", "PLANO DE CONTA N 03"]),
+        "CÓD. PLANO DE CONTA Nº. 04": obter_coluna_flexivel(
+            df_importado,
+            ["CÓD. PLANO DE CONTA Nº. 04", "COD. PLANO DE CONTA Nº. 04", "COD. PLANO DE CONTA N 04"],
+        ),
+    }
+
+    obrigatorias = ["CONTA CONTÁBIL", "CÓD. PLANO DE CONTA Nº. 04"]
+    faltando = [coluna for coluna in obrigatorias if not colunas_mapeadas.get(coluna)]
+    if faltando:
+        raise ValueError(f"A planilha importada não contém as colunas obrigatórias: {', '.join(faltando)}.")
+
+    df_normalizado = pd.DataFrame(
+        {
+            "CONTA CONTÁBIL": df_importado[colunas_mapeadas["CONTA CONTÁBIL"]],
+            "PLANO DE CONTA Nº. 03": (
+                df_importado[colunas_mapeadas["PLANO DE CONTA Nº. 03"]]
+                if colunas_mapeadas.get("PLANO DE CONTA Nº. 03")
+                else ""
+            ),
+            "CÓD. PLANO DE CONTA Nº. 04": df_importado[colunas_mapeadas["CÓD. PLANO DE CONTA Nº. 04"]],
+        }
+    )
+    return df_normalizado.fillna("")
+
+
+def salvar_parametrizacao_notas(df_parametrizacao, empresa_id):
+    novos_dados = preparar_registros_parametrizacao_notas(df_parametrizacao, empresa_id)
+    if novos_dados:
+        supabase.table(TABELA_PARAMETRIZACAO_NOTAS).upsert(
+            novos_dados,
+            on_conflict="empresa_id,codigo_plano_04",
+        ).execute()
+    return len(novos_dados)
+
+
 def exportar_excel_relatorio(nome_cliente, df_resumo, quadro_export):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -1869,6 +1987,50 @@ elif menu == "Notas Fiscais":
             else:
                 df_edicao_docs = df_pendencias_docs.copy()
                 df_edicao_docs.insert(0, "CONTA CONTÁBIL", "")
+                nome_empresa = EMPRESAS.get(str(empresa_selecionada), str(empresa_selecionada))
+                arquivo_modelo = exportar_modelo_parametrizacao_notas(nome_empresa, df_edicao_docs)
+
+                col_download, col_upload = st.columns([1, 1])
+                with col_download:
+                    st.download_button(
+                        "⬇️ Baixar planilha modelo",
+                        data=arquivo_modelo,
+                        file_name=f"modelo_parametrizacao_notas_{empresa_selecionada}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                with col_upload:
+                    with st.form(f"form_importar_modelo_notas_{empresa_selecionada}"):
+                        arquivo_modelo_preenchido = st.file_uploader(
+                            "📥 Importar planilha preenchida",
+                            type=["xlsx", "xls"],
+                            key=f"importar_modelo_notas_{empresa_selecionada}",
+                        )
+                        importar_modelo_notas = st.form_submit_button("📤 Importar planilha modelo")
+
+                    if importar_modelo_notas:
+                        try:
+                            if not arquivo_modelo_preenchido:
+                                raise ValueError("Selecione a planilha preenchida antes de importar.")
+                            df_importacao = importar_modelo_parametrizacao_notas(arquivo_modelo_preenchido)
+                            total_importacao = salvar_parametrizacao_notas(df_importacao, empresa_selecionada)
+                            if total_importacao:
+                                st.success(f"✅ {total_importacao} parametrizações das notas importadas com sucesso!")
+                                st.rerun()
+                            st.info("A planilha foi lida, mas não havia linhas com CONTA CONTÁBIL preenchida para importar.")
+                        except Exception as e:
+                            if erro_tabela_ausente(e):
+                                st.error(
+                                    f"A tabela `{TABELA_PARAMETRIZACAO_NOTAS}` ainda não existe no Supabase. Rode o SQL acima e tente de novo."
+                                )
+                            elif erro_rls_policy(e):
+                                st.error(
+                                    "O Supabase bloqueou a gravação por RLS. Para salvar pela aplicação, configure `SUPABASE_SERVICE_ROLE_KEY` no Streamlit Cloud ou crie uma policy de insert/update para essa tabela."
+                                )
+                            else:
+                                st.error(f"Erro ao importar planilha de parametrização das notas: {e}")
+
+                st.caption("Fluxo sugerido: baixe o modelo, preencha a coluna CONTA CONTÁBIL e importe a planilha para atualizar o banco.")
 
                 with st.form("form_param_pendencias_notas"):
                     tabela_param_docs = st.data_editor(
@@ -1888,32 +2050,11 @@ elif menu == "Notas Fiscais":
 
                     if salvar_pendencias_notas:
                         try:
-                            novos_dados = []
-                            vistos = set()
-                            for _, row in tabela_param_docs.iterrows():
-                                plano_03 = normalizar_texto(row.get("PLANO DE CONTA Nº. 03", ""))
-                                codigo_04 = normalizar_texto(row.get("CÓD. PLANO DE CONTA Nº. 04", ""))
-                                conta = normalizar_chave(row.get("CONTA CONTÁBIL", ""))
-                                if not codigo_04 or not conta:
-                                    continue
-                                chave = (str(empresa_selecionada), codigo_04)
-                                if chave in vistos:
-                                    continue
-                                vistos.add(chave)
-                                novos_dados.append(
-                                    {
-                                        "empresa_id": str(empresa_selecionada),
-                                        "plano_conta_nivel_03": plano_03,
-                                        "codigo_plano_04": codigo_04,
-                                        "conta_contabil": conta,
-                                    }
-                                )
-                            if novos_dados:
-                                supabase.table(TABELA_PARAMETRIZACAO_NOTAS).upsert(
-                                    novos_dados,
-                                    on_conflict="empresa_id,codigo_plano_04",
-                                ).execute()
-                            st.success("✅ Parametrizações pendentes das notas salvas com sucesso!")
+                            total_salvo = salvar_parametrizacao_notas(tabela_param_docs, empresa_selecionada)
+                            if total_salvo:
+                                st.success(f"✅ {total_salvo} parametrizações pendentes das notas salvas com sucesso!")
+                            else:
+                                st.info("Nenhuma linha com CONTA CONTÁBIL preenchida foi encontrada para salvar.")
                             st.rerun()
                         except Exception as e:
                             if erro_tabela_ausente(e):
