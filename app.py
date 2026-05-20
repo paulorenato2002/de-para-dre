@@ -1176,477 +1176,466 @@ empresa_selecionada = st.sidebar.selectbox(
     list(EMPRESAS.keys()),
     format_func=lambda x: EMPRESAS[x],
 )
-menu = st.sidebar.radio("Ir para", ["Conciliação", "Parametrização", "Notas Fiscais"])
+menu = st.sidebar.radio("Ir para", ["Dre", "Notas Fiscais"])
 
 
 # ==========================================
-# TELA 1: CONCILIAÇÃO (DUPLA CONFERÊNCIA)
+# TELA 1: DRE X CONTÁBIL
 # ==========================================
-if menu == "Conciliação":
-    st.title(f"📊 Conciliação Simples - {EMPRESAS[empresa_selecionada]}")
-    st.markdown("Conferência direta entre o contábil e o cliente, sem firula: valor, lançamento e diferença.")
+if menu == "Dre":
+    st.title(f"📊 DRE x Contábil - {EMPRESAS[empresa_selecionada]}")
+    st.markdown("Comparativo entre o relatório contábil e a DRE do cliente, com parametrização separada por empresa.")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        file_contabil = st.file_uploader("📂 Upload CONTÁBIL (.xlsx)", type=["xlsx", "xls"], key="contabil")
-    with col2:
-        file_cliente = st.file_uploader("📂 Upload CLIENTE / DRE (.xlsx)", type=["xlsx", "xls"], key="cliente")
+    aba_comparativo_dre, aba_parametrizacao_dre = st.tabs(["Comparativo", "Parametrização"])
 
-    if file_contabil and file_cliente:
-        if st.button("🚀 Iniciar Conferência", use_container_width=True, type="primary"):
-            with st.spinner("Lendo arquivos e cruzando com o banco de dados..."):
-                try:
-                    # Lendo os arquivos
-                    df_contabil = limpar_colunas(pd.read_excel(file_contabil, engine="openpyxl"))
-                    df_cliente = limpar_colunas(pd.read_excel(file_cliente, engine="openpyxl"))
+    with aba_comparativo_dre:
+        col1, col2 = st.columns(2)
+        with col1:
+            file_contabil = st.file_uploader("📂 Upload CONTÁBIL (.xlsx)", type=["xlsx", "xls"], key="contabil")
+        with col2:
+            file_cliente = st.file_uploader("📂 Upload CLIENTE / DRE (.xlsx)", type=["xlsx", "xls"], key="cliente")
 
-                    # Colunas esperadas
-                    col_conta_contabil = obter_coluna(df_contabil, ["codic"])
-                    col_grupo_contabil = obter_coluna(df_contabil, ["nomec"])
-                    col_valor_contabil = obter_coluna(df_contabil, ["valdeb"])
-                    col_data_contabil = obter_coluna(df_contabil, ["datalan"])
-                    col_historico_contabil = obter_coluna(df_contabil, ["historico_excel", "historico"])
-                    col_tipo_lan_contabil = obter_coluna(df_contabil, ["tipo_lan"])
+        if file_contabil and file_cliente:
+            if st.button("🚀 Iniciar Conferência", use_container_width=True, type="primary"):
+                with st.spinner("Lendo arquivos e cruzando com o banco de dados..."):
+                    try:
+                        df_contabil = limpar_colunas(pd.read_excel(file_contabil, engine="openpyxl"))
+                        df_cliente = limpar_colunas(pd.read_excel(file_cliente, engine="openpyxl"))
 
-                    col_plano_01_cliente = obter_coluna(df_cliente, ["Plano de conta nº. 01"])
-                    col_conta_cliente = obter_coluna(df_cliente, ["Cód. Plano de conta nº. 04"])
-                    col_nivel3_cliente = obter_coluna(df_cliente, ["Plano de conta nº. 03"])
-                    col_valor_cliente = obter_coluna(df_cliente, ["Débito"])
-                    col_data_cliente = obter_coluna(df_cliente, ["Dt. Movimento"])
-                    col_descricao_cliente = obter_coluna(df_cliente, ["Descrição"])
-                    col_fornecedor_cliente = obter_coluna(df_cliente, ["Cliente/Fornecedor"])
+                        col_conta_contabil = obter_coluna(df_contabil, ["codic"])
+                        col_grupo_contabil = obter_coluna(df_contabil, ["nomec"])
+                        col_valor_contabil = obter_coluna(df_contabil, ["valdeb"])
+                        col_historico_contabil = obter_coluna(df_contabil, ["historico_excel", "historico"])
+                        col_tipo_lan_contabil = obter_coluna(df_contabil, ["tipo_lan"])
 
-                    faltantes = []
-                    if not col_conta_contabil:
-                        faltantes.append("codic")
-                    if not col_grupo_contabil:
-                        faltantes.append("nomec")
-                    if not col_valor_contabil:
-                        faltantes.append("valdeb")
-                    if not col_conta_cliente:
-                        faltantes.append("Cód. Plano de conta nº. 04")
-                    if not col_nivel3_cliente:
-                        faltantes.append("Plano de conta nº. 03")
-                    if not col_valor_cliente:
-                        faltantes.append("Débito")
+                        col_plano_01_cliente = obter_coluna(df_cliente, ["Plano de conta nº. 01"])
+                        col_conta_cliente = obter_coluna(df_cliente, ["Cód. Plano de conta nº. 04"])
+                        col_nivel3_cliente = obter_coluna(df_cliente, ["Plano de conta nº. 03"])
+                        col_valor_cliente = obter_coluna(df_cliente, ["Débito"])
+                        col_descricao_cliente = obter_coluna(df_cliente, ["Descrição"])
+                        col_fornecedor_cliente = obter_coluna(df_cliente, ["Cliente/Fornecedor"])
 
-                    if faltantes:
-                        raise ValueError(
-                            "As planilhas enviadas não têm as colunas esperadas: " + ", ".join(faltantes)
-                        )
+                        faltantes = []
+                        if not col_conta_contabil:
+                            faltantes.append("codic")
+                        if not col_grupo_contabil:
+                            faltantes.append("nomec")
+                        if not col_valor_contabil:
+                            faltantes.append("valdeb")
+                        if not col_conta_cliente:
+                            faltantes.append("Cód. Plano de conta nº. 04")
+                        if not col_nivel3_cliente:
+                            faltantes.append("Plano de conta nº. 03")
+                        if not col_valor_cliente:
+                            faltantes.append("Débito")
 
-                    # Tratamento de valores e chaves
-                    df_contabil["Valor_Tratado"] = df_contabil[col_valor_contabil].apply(tratar_valor)
-                    df_contabil["_Conta_Contabil"] = df_contabil[col_conta_contabil].apply(normalizar_chave)
-                    df_contabil["_Grupo_Contabil"] = df_contabil[col_grupo_contabil].apply(normalizar_texto)
-
-                    df_cliente["Valor_Tratado"] = df_cliente[col_valor_cliente].apply(tratar_valor)
-                    df_cliente["_Nivel_3"] = df_cliente[col_nivel3_cliente].apply(normalizar_texto)
-                    df_cliente["_Nivel_4"] = df_cliente[col_conta_cliente].apply(normalizar_texto)
-                    df_cliente["_Nivel_4_Norm"] = df_cliente["_Nivel_4"].apply(normalizar_chave_relacionamento)
-                    if col_fornecedor_cliente:
-                        df_cliente["_Fornecedor"] = df_cliente[col_fornecedor_cliente].apply(normalizar_texto)
-
-                    antes_contabil = len(df_contabil)
-                    antes_cliente = len(df_cliente)
-                    df_contabil = aplicar_filtros_contabil(df_contabil, col_grupo_contabil, col_tipo_lan_contabil)
-                    df_cliente = aplicar_filtros_cliente(df_cliente, col_plano_01_cliente, col_conta_cliente)
-                    removidos_contabil = antes_contabil - len(df_contabil)
-                    removidos_cliente = antes_cliente - len(df_cliente)
-                    if removidos_contabil or removidos_cliente:
-                        st.info(
-                            f"Linhas desconsideradas nesta análise: {removidos_contabil} no contábil e {removidos_cliente} no cliente."
-                        )
-
-                    # Puxar Parametrização da empresa selecionada
-                    response = (
-                        supabase.table("parametrizacao_contas")
-                        .select("*")
-                        .eq("empresa_id", str(empresa_selecionada))
-                        .execute()
-                    )
-                    df_parametros = pd.DataFrame(response.data)
-
-                    if df_parametros.empty:
-                        st.warning(
-                            f"⚠️ Nenhuma regra encontrada no banco para a empresa {EMPRESAS[empresa_selecionada]}. Vá na aba de Parametrização!"
-                        )
-                    else:
-                        df_parametros = limpar_colunas(df_parametros)
-                        if "conta_contabil" not in df_parametros.columns or "fornecedor_cliente" not in df_parametros.columns:
-                            raise ValueError("A tabela parametrizacao_contas precisa ter as colunas conta_contabil e fornecedor_cliente.")
-
-                        df_parametros["conta_contabil"] = df_parametros["conta_contabil"].apply(normalizar_chave)
-                        df_parametros["fornecedor_cliente"] = df_parametros["fornecedor_cliente"].apply(
-                            normalizar_chave_relacionamento
-                        )
-
-                        # Agrupar Contábil por Conta Contábil
-                        df_cont_grp = (
-                            df_contabil.groupby("_Conta_Contabil")
-                            .agg(
-                                Grupo_Contabil=("_Grupo_Contabil", "first"),
-                                Valor_Contabil=("Valor_Tratado", "sum"),
-                                Qtde_Contabil=("_Conta_Contabil", "size"),
+                        if faltantes:
+                            raise ValueError(
+                                "As planilhas enviadas não têm as colunas esperadas: " + ", ".join(faltantes)
                             )
-                            .reset_index()
-                            .rename(columns={"_Conta_Contabil": "Conta Débito"})
-                        )
 
-                        resultados = []
-                        detalhes_por_conta = {}
+                        df_contabil["Valor_Tratado"] = df_contabil[col_valor_contabil].apply(tratar_valor)
+                        df_contabil["_Conta_Contabil"] = df_contabil[col_conta_contabil].apply(normalizar_chave)
+                        df_contabil["_Grupo_Contabil"] = df_contabil[col_grupo_contabil].apply(normalizar_texto)
 
-                        # Conferência linha a linha por Conta Contábil
-                        for _, row in df_cont_grp.iterrows():
-                            conta_contabil = str(row["Conta Débito"]).strip()
-                            valor_contabil = round(float(row["Valor_Contabil"]), 2)
-                            grupo_contabil = str(row["Grupo_Contabil"]).strip()
-                            qtde_contabil = int(row["Qtde_Contabil"])
+                        df_cliente["Valor_Tratado"] = df_cliente[col_valor_cliente].apply(tratar_valor)
+                        df_cliente["_Nivel_3"] = df_cliente[col_nivel3_cliente].apply(normalizar_texto)
+                        df_cliente["_Nivel_4"] = df_cliente[col_conta_cliente].apply(normalizar_texto)
+                        df_cliente["_Nivel_4_Norm"] = df_cliente["_Nivel_4"].apply(normalizar_chave_relacionamento)
+                        if col_fornecedor_cliente:
+                            df_cliente["_Fornecedor"] = df_cliente[col_fornecedor_cliente].apply(normalizar_texto)
 
-                            if valor_contabil == 0:
-                                continue
+                        antes_contabil = len(df_contabil)
+                        antes_cliente = len(df_cliente)
+                        df_contabil = aplicar_filtros_contabil(df_contabil, col_grupo_contabil, col_tipo_lan_contabil)
+                        df_cliente = aplicar_filtros_cliente(df_cliente, col_plano_01_cliente, col_conta_cliente)
+                        removidos_contabil = antes_contabil - len(df_contabil)
+                        removidos_cliente = antes_cliente - len(df_cliente)
+                        if removidos_contabil or removidos_cliente:
+                            st.info(
+                                f"Linhas desconsideradas nesta análise: {removidos_contabil} no contábil e {removidos_cliente} no cliente."
+                            )
 
-                            regras = df_parametros[df_parametros["conta_contabil"] == conta_contabil]
-
-                            df_cont_detalhe = df_contabil[df_contabil["_Conta_Contabil"] == conta_contabil].copy()
-
-                            if regras.empty:
-                                resultados.append(
-                                    {
-                                        "Conta Débito": conta_contabil,
-                                        "Grupo DRE (Contábil)": grupo_contabil,
-                                        "Valor Contábil": valor_contabil,
-                                        "Valor Cliente": 0.0,
-                                        "Diferença": valor_contabil,
-                                        "QTD CONTÁBIL": qtde_contabil,
-                                        "QTD CLIENTE": 0,
-                                        "DIF. QTD": qtde_contabil,
-                                        "STATUS": "⚠️ Sem parametrização",
-                                        "MOTIVO": "Conta sem regra cadastrada no mini banco.",
-                                    }
-                                )
-                                detalhes_por_conta[conta_contabil] = {
-                                    "contabil": df_cont_detalhe,
-                                    "cliente": pd.DataFrame(),
-                                }
-                            else:
-                                lista_fornecedores = set(regras["fornecedor_cliente"].tolist())
-                                filtro_cli = df_cliente["_Nivel_4_Norm"].isin(lista_fornecedores)
-                                df_cli_match = df_cliente[filtro_cli].copy()
-
-                                valor_cliente = round(df_cli_match["Valor_Tratado"].sum(), 2)
-                                qtde_cliente = int(len(df_cli_match))
-                                diff = round(valor_contabil - valor_cliente, 2)
-                                diff_qtd = qtde_contabil - qtde_cliente
-                                status, motivo = classificar_diferenca(diff)
-
-                                resultados.append(
-                                    {
-                                        "Conta Débito": conta_contabil,
-                                        "Grupo DRE (Contábil)": grupo_contabil,
-                                        "Valor Contábil": valor_contabil,
-                                        "Valor Cliente": valor_cliente,
-                                        "Diferença": diff,
-                                        "QTD CONTÁBIL": qtde_contabil,
-                                        "QTD CLIENTE": qtde_cliente,
-                                        "DIF. QTD": diff_qtd,
-                                        "STATUS": status,
-                                        "MOTIVO": motivo,
-                                    }
-                                )
-
-                                detalhes_por_conta[conta_contabil] = {
-                                    "contabil": df_cont_detalhe,
-                                    "cliente": df_cli_match,
-                                }
-
-                        df_resultados = pd.DataFrame(resultados)
-                        assinatura_atual = assinatura_arquivos(file_contabil, file_cliente)
-                        st.session_state["analise_conciliacao"] = {
-                            "df_resultados": df_resultados,
-                            "detalhes_por_conta": detalhes_por_conta,
-                            "empresa_id": empresa_selecionada,
-                            "empresa_nome": EMPRESAS[empresa_selecionada],
-                            "df_cliente": df_cliente,
-                            "df_contabil": df_contabil,
-                            "col_conta_contabil": col_conta_contabil,
-                            "col_grupo_contabil": col_grupo_contabil,
-                            "col_historico_contabil": col_historico_contabil,
-                            "col_nivel3_cliente": col_nivel3_cliente,
-                            "col_conta_cliente": col_conta_cliente,
-                            "col_fornecedor_cliente": col_fornecedor_cliente,
-                            "col_descricao_cliente": col_descricao_cliente,
-                        }
-                        st.session_state["analise_conciliacao_assinatura"] = assinatura_atual
-                        st.session_state["analise_conciliacao_empresa"] = empresa_selecionada
-
-                except Exception as e:
-                    st.error(f"❌ Erro ao ler planilhas ou cruzar dados. Detalhe: {e}")
-
-    analise_armazenada = st.session_state.get("analise_conciliacao")
-    assinatura_atual = assinatura_arquivos(file_contabil, file_cliente) if file_contabil and file_cliente else None
-    if (
-        analise_armazenada
-        and st.session_state.get("analise_conciliacao_empresa") == empresa_selecionada
-        and st.session_state.get("analise_conciliacao_assinatura") == assinatura_atual
-    ):
-        renderizar_analise_conferencia(analise_armazenada)
-    elif file_contabil and file_cliente:
-        st.info("Clique em Iniciar Conferência para gerar a análise.")
-
-
-# ==========================================
-# TELA 2: GESTÃO DO BANCO DE DADOS (CRUD)
-# ==========================================
-elif menu == "Parametrização":
-    st.title("⚙️ Parametrização da Empresa")
-    st.markdown(f"Gerenciando as regras da empresa: **{EMPRESAS[empresa_selecionada]}**")
-    st.caption("Aqui você consulta o que já foi parametrizado e identifica o que ainda falta vincular no cliente.")
-
-    df_banco = carregar_parametrizacao_empresa(empresa_selecionada)
-
-    st.subheader("Consulta de Parametrização")
-    st.caption("Conta Débito do contábil x Cód. Plano de conta nº. 04 do cliente.")
-
-    filtro_consulta = st.text_input("Buscar na parametrização", placeholder="Digite conta débito ou código do cliente...")
-    if filtro_consulta:
-        termo = filtro_consulta.strip().lower()
-        mascara = (
-            df_banco["conta_contabil"].astype(str).str.lower().str.contains(termo, na=False)
-            | df_banco["fornecedor_cliente"].astype(str).str.lower().str.contains(termo, na=False)
-        )
-        df_banco_visivel = df_banco[mascara].copy()
-    else:
-        df_banco_visivel = df_banco.copy()
-
-    if df_banco_visivel.empty:
-        st.info("Nenhuma regra encontrada para o filtro atual.")
-    else:
-        st.dataframe(
-            df_banco_visivel.rename(
-                columns={
-                    "conta_contabil": "CONTA DÉBITO",
-                    "fornecedor_cliente": "CÓD. PLANO 04",
-                }
-            )[["CONTA DÉBITO", "CÓD. PLANO 04"]]
-            .sort_values(["CONTA DÉBITO", "CÓD. PLANO 04"]),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    st.markdown("---")
-    st.subheader("Editar ou excluir parametrizações")
-    st.caption("Altere a conta débito, marque a linha para excluir ou adicione novas linhas diretamente na tabela.")
-
-    df_gerenciar = df_banco.copy()
-    if df_gerenciar.empty:
-        df_gerenciar = pd.DataFrame(columns=["id", "conta_contabil", "fornecedor_cliente", "EXCLUIR"])
-    else:
-        df_gerenciar["EXCLUIR"] = False
-
-    with st.form("form_gerenciar_parametrizacao"):
-        tabela_gerenciar = st.data_editor(
-            df_gerenciar,
-            num_rows="dynamic",
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "id": st.column_config.TextColumn("ID Supabase", disabled=True),
-                "conta_contabil": st.column_config.TextColumn("Conta Débito", required=True),
-                "fornecedor_cliente": st.column_config.TextColumn("Cód. Plano de conta nº. 04", required=True),
-                "EXCLUIR": st.column_config.CheckboxColumn("Excluir", help="Marque para remover este vínculo."),
-            },
-        )
-
-        salvar_gerenciamento = st.form_submit_button("💾 Salvar alterações da parametrização", type="primary")
-
-        if salvar_gerenciamento:
-            try:
-                dados_salvar = []
-                ids_excluir = []
-                vistos = set()
-
-                for _, row in tabela_gerenciar.iterrows():
-                    row_id = row.get("id")
-                    excluir = bool(row.get("EXCLUIR", False))
-                    conta = normalizar_chave(row.get("conta_contabil", ""))
-                    fornecedor = normalizar_texto(row.get("fornecedor_cliente", ""))
-
-                    if pd.notna(row_id):
-                        row_id = str(row_id)
-
-                    if excluir:
-                        if row_id:
-                            ids_excluir.append(row_id)
-                        elif fornecedor:
-                            ids_excluir.append(f"{empresa_selecionada}:{fornecedor}")
-                        continue
-
-                    if not conta or not fornecedor:
-                        continue
-
-                    chave = (str(empresa_selecionada), fornecedor)
-                    if chave in vistos:
-                        continue
-                    vistos.add(chave)
-
-                    dados_salvar.append(
-                        {
-                            "empresa_id": str(empresa_selecionada),
-                            "conta_contabil": conta,
-                            "fornecedor_cliente": fornecedor,
-                        }
-                    )
-
-                for item in ids_excluir:
-                    if ":" in item:
-                        _, fornecedor = item.split(":", 1)
-                        supabase.table("parametrizacao_contas").delete() \
-                            .eq("empresa_id", str(empresa_selecionada)) \
-                            .eq("fornecedor_cliente", fornecedor) \
+                        response = (
+                            supabase.table("parametrizacao_contas")
+                            .select("*")
+                            .eq("empresa_id", str(empresa_selecionada))
                             .execute()
-                    else:
-                        supabase.table("parametrizacao_contas").delete().eq("id", item).execute()
+                        )
+                        df_parametros = pd.DataFrame(response.data)
 
-                if dados_salvar:
-                    try:
-                        supabase.table("parametrizacao_contas").upsert(
-                            dados_salvar,
-                            on_conflict="empresa_id,fornecedor_cliente",
-                        ).execute()
-                    except Exception:
-                        for item in dados_salvar:
-                            supabase.table("parametrizacao_contas").delete() \
-                                .eq("empresa_id", item["empresa_id"]) \
-                                .eq("fornecedor_cliente", item["fornecedor_cliente"]) \
-                                .execute()
-                        supabase.table("parametrizacao_contas").insert(dados_salvar).execute()
+                        if df_parametros.empty:
+                            st.warning(
+                                f"⚠️ Nenhuma regra encontrada no banco para a empresa {EMPRESAS[empresa_selecionada]}. Vá na aba Parametrização!"
+                            )
+                        else:
+                            df_parametros = limpar_colunas(df_parametros)
+                            if "conta_contabil" not in df_parametros.columns or "fornecedor_cliente" not in df_parametros.columns:
+                                raise ValueError("A tabela parametrizacao_contas precisa ter as colunas conta_contabil e fornecedor_cliente.")
 
-                st.success("✅ Parametrizações atualizadas com sucesso!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Erro ao atualizar parametrizações: {e}")
-
-    st.markdown("---")
-    st.subheader("Fornecedores sem parametrização")
-    st.caption("Lista automática dos lançamentos do cliente que ainda não têm de/para cadastrado.")
-
-    fonte_cliente = st.session_state.get("analise_conciliacao", {}).get("df_cliente")
-    col_nivel3_cliente = st.session_state.get("analise_conciliacao", {}).get("col_nivel3_cliente")
-    col_conta_cliente = st.session_state.get("analise_conciliacao", {}).get("col_conta_cliente")
-    col_fornecedor_cliente = st.session_state.get("analise_conciliacao", {}).get("col_fornecedor_cliente")
-    col_descricao_cliente = st.session_state.get("analise_conciliacao", {}).get("col_descricao_cliente")
-
-    if fonte_cliente is None or fonte_cliente.empty:
-        st.info(
-            "Para listar os fornecedores sem parametrização, carregue uma base do cliente abaixo ou rode uma conciliação primeiro."
-        )
-        arquivo_cliente_consulta = st.file_uploader(
-            "📂 Upload CLIENTE / DRE para consulta",
-            type=["xlsx", "xls"],
-            key="cliente_consulta_parametrizacao",
-        )
-        if arquivo_cliente_consulta:
-            fonte_cliente = limpar_colunas(pd.read_excel(arquivo_cliente_consulta, engine="openpyxl"))
-            col_plano_01_cliente = obter_coluna(fonte_cliente, ["Plano de conta nº. 01"])
-            col_nivel3_cliente = obter_coluna(fonte_cliente, ["Plano de conta nº. 03"])
-            col_conta_cliente = obter_coluna(fonte_cliente, ["Cód. Plano de conta nº. 04"])
-            col_fornecedor_cliente = obter_coluna(fonte_cliente, ["Cliente/Fornecedor"])
-            col_descricao_cliente = obter_coluna(fonte_cliente, ["Descrição"])
-            col_valor_cliente = obter_coluna(fonte_cliente, ["Débito"])
-            if col_nivel3_cliente and col_conta_cliente and col_valor_cliente:
-                fonte_cliente = aplicar_filtros_cliente(fonte_cliente, col_plano_01_cliente, col_conta_cliente)
-                fonte_cliente["Valor_Tratado"] = fonte_cliente[col_valor_cliente].apply(tratar_valor)
-                fonte_cliente["_Nivel_3"] = fonte_cliente[col_nivel3_cliente].apply(normalizar_texto)
-                fonte_cliente["_Nivel_4"] = fonte_cliente[col_conta_cliente].apply(normalizar_texto)
-                if col_fornecedor_cliente:
-                    fonte_cliente["_Fornecedor"] = fonte_cliente[col_fornecedor_cliente].apply(normalizar_texto)
-            else:
-                st.warning("A base enviada não tem as colunas mínimas esperadas para consulta.")
-
-    if fonte_cliente is not None and not fonte_cliente.empty and col_nivel3_cliente and col_conta_cliente:
-        df_pendencias = preparar_pendencias_parametrizacao(
-            fonte_cliente,
-            df_banco,
-            col_nivel3_cliente,
-            col_conta_cliente,
-            col_fornecedor_cliente,
-            col_descricao_cliente,
-        )
-
-        if df_pendencias.empty:
-            st.success("Todas as contas/fornecedores dessa base já estão parametrizados.")
-        else:
-            st.subheader("Montar parametrização das pendências")
-            st.caption("Preencha a conta débito nas linhas pendentes e salve para criar os vínculos no banco.")
-
-            df_edicao = df_pendencias.copy()
-            df_edicao.insert(0, "CONTA DÉBITO", "")
-
-            with st.form("form_param_pendencias"):
-                tabela_parametrizacao = st.data_editor(
-                    df_edicao,
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "CONTA DÉBITO": st.column_config.TextColumn("CONTA DÉBITO", required=False),
-                        "GRUPO DRE": st.column_config.TextColumn("GRUPO DRE", disabled=True),
-                        "CÓD. PLANO 04": st.column_config.TextColumn("CÓD. PLANO 04", disabled=True),
-                        "FORNECEDOR": st.column_config.TextColumn("FORNECEDOR", disabled=True),
-                        "VALOR": st.column_config.NumberColumn("VALOR", disabled=True, format="R$ %.2f"),
-                        "QTD LANCAMENTOS": st.column_config.NumberColumn("QTD LANCAMENTOS", disabled=True),
-                        "STATUS": st.column_config.TextColumn("STATUS", disabled=True),
-                    },
-                )
-
-                salvar_parametrizacao = st.form_submit_button("💾 Salvar parametrizações pendentes", type="primary")
-
-                if salvar_parametrizacao:
-                    try:
-                        novos_dados = []
-                        vistos = set()
-
-                        for _, row in tabela_parametrizacao.iterrows():
-                            conta = normalizar_chave(row.get("CONTA DÉBITO", ""))
-                            fornecedor = normalizar_texto(row.get("CÓD. PLANO 04", ""))
-
-                            if not conta or not fornecedor:
-                                continue
-
-                            chave = (str(empresa_selecionada), conta, fornecedor)
-                            if chave in vistos:
-                                continue
-                            vistos.add(chave)
-
-                            novos_dados.append(
-                                {
-                                    "empresa_id": str(empresa_selecionada),
-                                    "conta_contabil": conta,
-                                    "fornecedor_cliente": fornecedor,
-                                }
+                            df_parametros["conta_contabil"] = df_parametros["conta_contabil"].apply(normalizar_chave)
+                            df_parametros["fornecedor_cliente"] = df_parametros["fornecedor_cliente"].apply(
+                                normalizar_chave_relacionamento
                             )
 
-                        if novos_dados:
-                            try:
-                                supabase.table("parametrizacao_contas").upsert(
-                                    novos_dados,
-                                    on_conflict="empresa_id,fornecedor_cliente",
-                                ).execute()
-                            except Exception:
-                                for item in novos_dados:
-                                    supabase.table("parametrizacao_contas").delete() \
-                                        .eq("empresa_id", item["empresa_id"]) \
-                                        .eq("fornecedor_cliente", item["fornecedor_cliente"]) \
-                                        .execute()
-                                supabase.table("parametrizacao_contas").insert(novos_dados).execute()
+                            df_cont_grp = (
+                                df_contabil.groupby("_Conta_Contabil")
+                                .agg(
+                                    Grupo_Contabil=("_Grupo_Contabil", "first"),
+                                    Valor_Contabil=("Valor_Tratado", "sum"),
+                                    Qtde_Contabil=("_Conta_Contabil", "size"),
+                                )
+                                .reset_index()
+                                .rename(columns={"_Conta_Contabil": "Conta Débito"})
+                            )
 
-                        st.success("✅ Parametrizações salvas com sucesso!")
-                        st.rerun()
+                            resultados = []
+                            detalhes_por_conta = {}
+
+                            for _, row in df_cont_grp.iterrows():
+                                conta_contabil = str(row["Conta Débito"]).strip()
+                                valor_contabil = round(float(row["Valor_Contabil"]), 2)
+                                grupo_contabil = str(row["Grupo_Contabil"]).strip()
+                                qtde_contabil = int(row["Qtde_Contabil"])
+
+                                if valor_contabil == 0:
+                                    continue
+
+                                regras = df_parametros[df_parametros["conta_contabil"] == conta_contabil]
+                                df_cont_detalhe = df_contabil[df_contabil["_Conta_Contabil"] == conta_contabil].copy()
+
+                                if regras.empty:
+                                    resultados.append(
+                                        {
+                                            "Conta Débito": conta_contabil,
+                                            "Grupo DRE (Contábil)": grupo_contabil,
+                                            "Valor Contábil": valor_contabil,
+                                            "Valor Cliente": 0.0,
+                                            "Diferença": valor_contabil,
+                                            "QTD CONTÁBIL": qtde_contabil,
+                                            "QTD CLIENTE": 0,
+                                            "DIF. QTD": qtde_contabil,
+                                            "STATUS": "⚠️ Sem parametrização",
+                                            "MOTIVO": "Conta sem regra cadastrada no mini banco.",
+                                        }
+                                    )
+                                    detalhes_por_conta[conta_contabil] = {
+                                        "contabil": df_cont_detalhe,
+                                        "cliente": pd.DataFrame(),
+                                    }
+                                else:
+                                    lista_fornecedores = set(regras["fornecedor_cliente"].tolist())
+                                    filtro_cli = df_cliente["_Nivel_4_Norm"].isin(lista_fornecedores)
+                                    df_cli_match = df_cliente[filtro_cli].copy()
+
+                                    valor_cliente = round(df_cli_match["Valor_Tratado"].sum(), 2)
+                                    qtde_cliente = int(len(df_cli_match))
+                                    diff = round(valor_contabil - valor_cliente, 2)
+                                    diff_qtd = qtde_contabil - qtde_cliente
+                                    status, motivo = classificar_diferenca(diff)
+
+                                    resultados.append(
+                                        {
+                                            "Conta Débito": conta_contabil,
+                                            "Grupo DRE (Contábil)": grupo_contabil,
+                                            "Valor Contábil": valor_contabil,
+                                            "Valor Cliente": valor_cliente,
+                                            "Diferença": diff,
+                                            "QTD CONTÁBIL": qtde_contabil,
+                                            "QTD CLIENTE": qtde_cliente,
+                                            "DIF. QTD": diff_qtd,
+                                            "STATUS": status,
+                                            "MOTIVO": motivo,
+                                        }
+                                    )
+
+                                    detalhes_por_conta[conta_contabil] = {
+                                        "contabil": df_cont_detalhe,
+                                        "cliente": df_cli_match,
+                                    }
+
+                            df_resultados = pd.DataFrame(resultados)
+                            assinatura_atual = assinatura_arquivos(file_contabil, file_cliente)
+                            st.session_state["analise_conciliacao"] = {
+                                "df_resultados": df_resultados,
+                                "detalhes_por_conta": detalhes_por_conta,
+                                "empresa_id": empresa_selecionada,
+                                "empresa_nome": EMPRESAS[empresa_selecionada],
+                                "df_cliente": df_cliente,
+                                "df_contabil": df_contabil,
+                                "col_conta_contabil": col_conta_contabil,
+                                "col_grupo_contabil": col_grupo_contabil,
+                                "col_historico_contabil": col_historico_contabil,
+                                "col_nivel3_cliente": col_nivel3_cliente,
+                                "col_conta_cliente": col_conta_cliente,
+                                "col_fornecedor_cliente": col_fornecedor_cliente,
+                                "col_descricao_cliente": col_descricao_cliente,
+                            }
+                            st.session_state["analise_conciliacao_assinatura"] = assinatura_atual
+                            st.session_state["analise_conciliacao_empresa"] = empresa_selecionada
+
                     except Exception as e:
-                        st.error(f"Erro ao salvar parametrizações: {e}")
-    elif fonte_cliente is not None and fonte_cliente.empty:
-        st.warning("Não foi possível montar a lista de pendências porque a base do cliente está vazia.")
+                        st.error(f"❌ Erro ao ler planilhas ou cruzar dados. Detalhe: {e}")
+
+        analise_armazenada = st.session_state.get("analise_conciliacao")
+        assinatura_atual = assinatura_arquivos(file_contabil, file_cliente) if file_contabil and file_cliente else None
+        if (
+            analise_armazenada
+            and st.session_state.get("analise_conciliacao_empresa") == empresa_selecionada
+            and st.session_state.get("analise_conciliacao_assinatura") == assinatura_atual
+        ):
+            renderizar_analise_conferencia(analise_armazenada)
+        elif file_contabil and file_cliente:
+            st.info("Clique em Iniciar Conferência para gerar a análise.")
+
+    with aba_parametrizacao_dre:
+        st.subheader("Parametrização")
+        st.caption("Aqui você consulta o que já foi parametrizado e identifica o que ainda falta vincular no cliente.")
+
+        df_banco = carregar_parametrizacao_empresa(empresa_selecionada)
+
+        st.subheader("Consulta de Parametrização")
+        st.caption("Conta Débito do contábil x Cód. Plano de conta nº. 04 do cliente.")
+
+        filtro_consulta = st.text_input("Buscar na parametrização", placeholder="Digite conta débito ou código do cliente...")
+        if filtro_consulta:
+            termo = filtro_consulta.strip().lower()
+            mascara = (
+                df_banco["conta_contabil"].astype(str).str.lower().str.contains(termo, na=False)
+                | df_banco["fornecedor_cliente"].astype(str).str.lower().str.contains(termo, na=False)
+            )
+            df_banco_visivel = df_banco[mascara].copy()
+        else:
+            df_banco_visivel = df_banco.copy()
+
+        if df_banco_visivel.empty:
+            st.info("Nenhuma regra encontrada para o filtro atual.")
+        else:
+            st.dataframe(
+                df_banco_visivel.rename(
+                    columns={
+                        "conta_contabil": "CONTA DÉBITO",
+                        "fornecedor_cliente": "CÓD. PLANO 04",
+                    }
+                )[["CONTA DÉBITO", "CÓD. PLANO 04"]]
+                .sort_values(["CONTA DÉBITO", "CÓD. PLANO 04"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        st.markdown("---")
+        st.subheader("Editar ou excluir parametrizações")
+        st.caption("Altere a conta débito, marque a linha para excluir ou adicione novas linhas diretamente na tabela.")
+
+        df_gerenciar = df_banco.copy()
+        if df_gerenciar.empty:
+            df_gerenciar = pd.DataFrame(columns=["id", "conta_contabil", "fornecedor_cliente", "EXCLUIR"])
+        else:
+            df_gerenciar["EXCLUIR"] = False
+
+        with st.form("form_gerenciar_parametrizacao"):
+            tabela_gerenciar = st.data_editor(
+                df_gerenciar,
+                num_rows="dynamic",
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "id": st.column_config.TextColumn("ID Supabase", disabled=True),
+                    "conta_contabil": st.column_config.TextColumn("Conta Débito", required=True),
+                    "fornecedor_cliente": st.column_config.TextColumn("Cód. Plano de conta nº. 04", required=True),
+                    "EXCLUIR": st.column_config.CheckboxColumn("Excluir", help="Marque para remover este vínculo."),
+                },
+            )
+
+            salvar_gerenciamento = st.form_submit_button("💾 Salvar alterações da parametrização", type="primary")
+
+            if salvar_gerenciamento:
+                try:
+                    dados_salvar = []
+                    ids_excluir = []
+                    vistos = set()
+
+                    for _, row in tabela_gerenciar.iterrows():
+                        row_id = row.get("id")
+                        excluir = bool(row.get("EXCLUIR", False))
+                        conta = normalizar_chave(row.get("conta_contabil", ""))
+                        fornecedor = normalizar_texto(row.get("fornecedor_cliente", ""))
+
+                        if pd.notna(row_id):
+                            row_id = str(row_id)
+
+                        if excluir:
+                            if row_id:
+                                ids_excluir.append(row_id)
+                            elif fornecedor:
+                                ids_excluir.append(f"{empresa_selecionada}:{fornecedor}")
+                            continue
+
+                        if not conta or not fornecedor:
+                            continue
+
+                        chave = (str(empresa_selecionada), fornecedor)
+                        if chave in vistos:
+                            continue
+                        vistos.add(chave)
+
+                        dados_salvar.append(
+                            {
+                                "empresa_id": str(empresa_selecionada),
+                                "conta_contabil": conta,
+                                "fornecedor_cliente": fornecedor,
+                            }
+                        )
+
+                    for item in ids_excluir:
+                        if ":" in item:
+                            _, fornecedor = item.split(":", 1)
+                            supabase.table("parametrizacao_contas").delete() \
+                                .eq("empresa_id", str(empresa_selecionada)) \
+                                .eq("fornecedor_cliente", fornecedor) \
+                                .execute()
+                        else:
+                            supabase.table("parametrizacao_contas").delete().eq("id", item).execute()
+
+                    if dados_salvar:
+                        try:
+                            supabase.table("parametrizacao_contas").upsert(
+                                dados_salvar,
+                                on_conflict="empresa_id,fornecedor_cliente",
+                            ).execute()
+                        except Exception:
+                            for item in dados_salvar:
+                                supabase.table("parametrizacao_contas").delete() \
+                                    .eq("empresa_id", item["empresa_id"]) \
+                                    .eq("fornecedor_cliente", item["fornecedor_cliente"]) \
+                                    .execute()
+                            supabase.table("parametrizacao_contas").insert(dados_salvar).execute()
+
+                    st.success("✅ Parametrizações atualizadas com sucesso!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao atualizar parametrizações: {e}")
+
+        st.markdown("---")
+        st.subheader("Fornecedores sem parametrização")
+        st.caption("Lista automática dos lançamentos do cliente que ainda não têm de/para cadastrado.")
+
+        fonte_cliente = st.session_state.get("analise_conciliacao", {}).get("df_cliente")
+        col_nivel3_cliente = st.session_state.get("analise_conciliacao", {}).get("col_nivel3_cliente")
+        col_conta_cliente = st.session_state.get("analise_conciliacao", {}).get("col_conta_cliente")
+        col_fornecedor_cliente = st.session_state.get("analise_conciliacao", {}).get("col_fornecedor_cliente")
+        col_descricao_cliente = st.session_state.get("analise_conciliacao", {}).get("col_descricao_cliente")
+
+        if fonte_cliente is None or fonte_cliente.empty:
+            st.info(
+                "Para listar os fornecedores sem parametrização, carregue uma base do cliente abaixo ou rode uma conciliação primeiro."
+            )
+            arquivo_cliente_consulta = st.file_uploader(
+                "📂 Upload CLIENTE / DRE para consulta",
+                type=["xlsx", "xls"],
+                key="cliente_consulta_parametrizacao",
+            )
+            if arquivo_cliente_consulta:
+                fonte_cliente = limpar_colunas(pd.read_excel(arquivo_cliente_consulta, engine="openpyxl"))
+                col_plano_01_cliente = obter_coluna(fonte_cliente, ["Plano de conta nº. 01"])
+                col_nivel3_cliente = obter_coluna(fonte_cliente, ["Plano de conta nº. 03"])
+                col_conta_cliente = obter_coluna(fonte_cliente, ["Cód. Plano de conta nº. 04"])
+                col_fornecedor_cliente = obter_coluna(fonte_cliente, ["Cliente/Fornecedor"])
+                col_descricao_cliente = obter_coluna(fonte_cliente, ["Descrição"])
+                col_valor_cliente = obter_coluna(fonte_cliente, ["Débito"])
+                if col_nivel3_cliente and col_conta_cliente and col_valor_cliente:
+                    fonte_cliente = aplicar_filtros_cliente(fonte_cliente, col_plano_01_cliente, col_conta_cliente)
+                    fonte_cliente["Valor_Tratado"] = fonte_cliente[col_valor_cliente].apply(tratar_valor)
+                    fonte_cliente["_Nivel_3"] = fonte_cliente[col_nivel3_cliente].apply(normalizar_texto)
+                    fonte_cliente["_Nivel_4"] = fonte_cliente[col_conta_cliente].apply(normalizar_texto)
+                    if col_fornecedor_cliente:
+                        fonte_cliente["_Fornecedor"] = fonte_cliente[col_fornecedor_cliente].apply(normalizar_texto)
+                else:
+                    st.warning("A base enviada não tem as colunas mínimas esperadas para consulta.")
+
+        if fonte_cliente is not None and not fonte_cliente.empty and col_nivel3_cliente and col_conta_cliente:
+            df_pendencias = preparar_pendencias_parametrizacao(
+                fonte_cliente,
+                df_banco,
+                col_nivel3_cliente,
+                col_conta_cliente,
+                col_fornecedor_cliente,
+                col_descricao_cliente,
+            )
+
+            if df_pendencias.empty:
+                st.success("Todas as contas/fornecedores dessa base já estão parametrizados.")
+            else:
+                st.subheader("Montar parametrização das pendências")
+                st.caption("Preencha a conta débito nas linhas pendentes e salve para criar os vínculos no banco.")
+
+                df_edicao = df_pendencias.copy()
+                df_edicao.insert(0, "CONTA DÉBITO", "")
+
+                with st.form("form_param_pendencias"):
+                    tabela_parametrizacao = st.data_editor(
+                        df_edicao,
+                        num_rows="dynamic",
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "CONTA DÉBITO": st.column_config.TextColumn("CONTA DÉBITO", required=False),
+                            "GRUPO DRE": st.column_config.TextColumn("GRUPO DRE", disabled=True),
+                            "CÓD. PLANO 04": st.column_config.TextColumn("CÓD. PLANO 04", disabled=True),
+                            "FORNECEDOR": st.column_config.TextColumn("FORNECEDOR", disabled=True),
+                            "VALOR": st.column_config.NumberColumn("VALOR", disabled=True, format="R$ %.2f"),
+                            "QTD LANCAMENTOS": st.column_config.NumberColumn("QTD LANCAMENTOS", disabled=True),
+                            "STATUS": st.column_config.TextColumn("STATUS", disabled=True),
+                        },
+                    )
+
+                    salvar_parametrizacao = st.form_submit_button("💾 Salvar parametrizações pendentes", type="primary")
+
+                    if salvar_parametrizacao:
+                        try:
+                            novos_dados = []
+                            vistos = set()
+
+                            for _, row in tabela_parametrizacao.iterrows():
+                                conta = normalizar_chave(row.get("CONTA DÉBITO", ""))
+                                fornecedor = normalizar_texto(row.get("CÓD. PLANO 04", ""))
+
+                                if not conta or not fornecedor:
+                                    continue
+
+                                chave = (str(empresa_selecionada), conta, fornecedor)
+                                if chave in vistos:
+                                    continue
+                                vistos.add(chave)
+
+                                novos_dados.append(
+                                    {
+                                        "empresa_id": str(empresa_selecionada),
+                                        "conta_contabil": conta,
+                                        "fornecedor_cliente": fornecedor,
+                                    }
+                                )
+
+                            if novos_dados:
+                                try:
+                                    supabase.table("parametrizacao_contas").upsert(
+                                        novos_dados,
+                                        on_conflict="empresa_id,fornecedor_cliente",
+                                    ).execute()
+                                except Exception:
+                                    for item in novos_dados:
+                                        supabase.table("parametrizacao_contas").delete() \
+                                            .eq("empresa_id", item["empresa_id"]) \
+                                            .eq("fornecedor_cliente", item["fornecedor_cliente"]) \
+                                            .execute()
+                                    supabase.table("parametrizacao_contas").insert(novos_dados).execute()
+
+                            st.success("✅ Parametrizações salvas com sucesso!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao salvar parametrizações: {e}")
+        elif fonte_cliente is not None and fonte_cliente.empty:
+            st.warning("Não foi possível montar a lista de pendências porque a base do cliente está vazia.")
 
 
 # ==========================================
