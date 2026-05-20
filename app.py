@@ -482,7 +482,9 @@ def preparar_base_documentos_fiscais(df_nfe, df_nfse):
             base_nfse["_Documento"] = (
                 base_nfse[col_numero_nfse].apply(normalizar_texto) if col_numero_nfse else ""
             )
-            base_nfse["_Data"] = base_nfse[col_data_nfse] if col_data_nfse else ""
+            base_nfse["_Data"] = (
+                base_nfse[col_data_nfse].apply(formatar_data_exportacao) if col_data_nfse else ""
+            )
             base_nfse["Valor_Tratado"] = base_nfse[col_valor_nfse].apply(tratar_valor)
             base_nfse["_Origem"] = "NFSe"
             bases.append(base_nfse)
@@ -519,7 +521,9 @@ def preparar_base_documentos_fiscais(df_nfe, df_nfse):
                 base_nfe["_Nivel_4_Norm"] = base_nfe["_Nivel_4"].apply(normalizar_chave_relacionamento)
                 base_nfe["_Fornecedor"] = base_nfe[col_fornecedor_nfe].apply(normalizar_texto)
                 base_nfe["_Documento"] = base_nfe[col_numero_nfe].apply(normalizar_texto) if col_numero_nfe else ""
-                base_nfe["_Data"] = base_nfe[col_data_nfe] if col_data_nfe else ""
+                base_nfe["_Data"] = (
+                    base_nfe[col_data_nfe].apply(formatar_data_exportacao) if col_data_nfe else ""
+                )
                 base_nfe["Valor_Tratado"] = base_nfe[col_valor_nfe].apply(tratar_valor)
                 base_nfe["_Origem"] = "NFe"
                 bases.append(base_nfe)
@@ -1153,7 +1157,11 @@ def montar_exportacao_contabil_documentos(analise):
     df_export = df_documentos.copy()
     df_export["Débito"] = df_export["_Nivel_4_Norm"].map(mapa_contas).fillna("")
     df_export["_STATUS"] = df_export["Débito"].map(mapa_status).fillna("⚠️ Sem parametrização")
-    df_export["Data"] = df_export["_Data"].apply(formatar_data_exportacao) if "_Data" in df_export.columns else ""
+    df_export["Data"] = (
+        df_export["_Data"].apply(formatar_data_exportacao)
+        if "_Data" in df_export.columns
+        else ""
+    )
     df_export["Crédito"] = ""
     df_export["Valor"] = df_export["Valor_Tratado"].apply(float)
     df_export["Cod. Hist."] = 15
@@ -1177,6 +1185,9 @@ def renderizar_exportacao_contabil(nome_cliente, df_exportacao, esconder_sem_par
     if df_exportacao is None or df_exportacao.empty:
         st.info("Rode o comparativo primeiro para gerar a base de exportação contábil desta tela.")
         return
+
+    if "Data" in df_exportacao.columns and df_exportacao["Data"].astype(str).str.strip().eq("").all():
+        st.warning("A base atual não trouxe datas para exportação. Reexecute o comparativo com os arquivos fiscais para recarregar a `Dt. Emissão`.")
 
     abas_exportacao = separar_exportacao_por_status(df_exportacao, esconder_sem_param_no_todos=esconder_sem_param_no_todos)
     arquivo_excel = exportar_planilha_contabil(nome_cliente, abas_exportacao)
