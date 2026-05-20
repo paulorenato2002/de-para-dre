@@ -237,6 +237,13 @@ def formatar_moeda(valor):
     return f"R$ {abs(float(valor)):,.2f}"
 
 
+def formatar_numero_br(valor):
+    try:
+        return f"{float(valor):.2f}".replace(".", ",")
+    except Exception:
+        return normalizar_texto(valor)
+
+
 def formatar_data_exportacao(valor):
     if pd.isna(valor):
         return ""
@@ -1062,7 +1069,7 @@ def exportar_planilha_contabil(nome_cliente, abas_exportacao):
                 for cell in row:
                     cell.border = border
                     if cell.column == 4:
-                        cell.number_format = 'R$ #,##0.00'
+                        cell.number_format = '0.00'
 
             larguras = {
                 "A": 14,
@@ -1113,7 +1120,7 @@ def montar_exportacao_contabil_dre(analise):
     )
     df_export["Crédito"] = ""
     df_export["Valor"] = df_export["Valor_Tratado"].apply(float)
-    df_export["Cod. Hist."] = ""
+    df_export["Cod. Hist."] = 15
     df_export["Histórico"] = df_export.apply(
         lambda row: montar_historico_exportacao(
             row.get(col_fornecedor_cliente, "") if col_fornecedor_cliente else "",
@@ -1149,7 +1156,7 @@ def montar_exportacao_contabil_documentos(analise):
     df_export["Data"] = df_export["_Data"].apply(formatar_data_exportacao) if "_Data" in df_export.columns else ""
     df_export["Crédito"] = ""
     df_export["Valor"] = df_export["Valor_Tratado"].apply(float)
-    df_export["Cod. Hist."] = ""
+    df_export["Cod. Hist."] = 15
     df_export["Histórico"] = df_export.apply(
         lambda row: montar_historico_exportacao(
             row.get("_Origem", ""),
@@ -1165,7 +1172,7 @@ def montar_exportacao_contabil_documentos(analise):
 def renderizar_exportacao_contabil(nome_cliente, df_exportacao, esconder_sem_param_no_todos, prefixo_arquivo):
     st.subheader("Exportação Contábil")
     st.caption("Base modelo para importação no sistema contábil, separada por status em abas do Excel.")
-    st.caption("`Débito` sai da parametrização. `Crédito` e `Cod. Hist.` ficam em branco para complemento, porque os arquivos de origem não trazem uma regra única para esses campos.")
+    st.caption("`Débito` sai da parametrização, `Crédito` fica em branco e `Cod. Hist.` vai preenchido com `15`.")
 
     if df_exportacao is None or df_exportacao.empty:
         st.info("Rode o comparativo primeiro para gerar a base de exportação contábil desta tela.")
@@ -1202,7 +1209,7 @@ def renderizar_exportacao_contabil(nome_cliente, df_exportacao, esconder_sem_par
     else:
         st.dataframe(
             df_preview[["Data", "Débito", "Crédito", "Valor", "Cod. Hist.", "Histórico"]].style.format(
-                {"Valor": "R$ {:,.2f}"}
+                {"Valor": formatar_numero_br}
             ),
             use_container_width=True,
             hide_index=True,
