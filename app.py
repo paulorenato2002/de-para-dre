@@ -1832,20 +1832,26 @@ if menu == "Dre":
                             resultados = []
                             detalhes_por_conta = {}
                             docs_usados = []
+                            contas_contabeis = df_cont_grp["Conta Débito"].astype(str).str.strip().tolist()
+                            contas_parametrizadas = (
+                                df_parametros["conta_contabil"].dropna().astype(str).map(normalizar_chave).tolist()
+                            )
+                            contas_para_conferir = list(contas_contabeis)
+                            for conta_parametrizada in contas_parametrizadas:
+                                if conta_parametrizada not in contas_para_conferir:
+                                    contas_para_conferir.append(conta_parametrizada)
 
-                            for _, row in df_cont_grp.iterrows():
-                                conta_contabil = str(row["Conta Débito"]).strip()
-                                valor_contabil = round(float(row["Valor_Contabil"]), 2)
-                                grupo_contabil = str(row["Grupo_Contabil"]).strip()
-                                qtde_contabil = int(row["Qtde_Contabil"])
-
-                                if valor_contabil == 0:
-                                    continue
-
+                            for conta_contabil in contas_para_conferir:
+                                row_cont = df_cont_grp[df_cont_grp["Conta Débito"].astype(str).str.strip() == conta_contabil]
+                                valor_contabil = round(float(row_cont["Valor_Contabil"].iloc[0]), 2) if not row_cont.empty else 0.0
+                                grupo_contabil = str(row_cont["Grupo_Contabil"].iloc[0]).strip() if not row_cont.empty else ""
+                                qtde_contabil = int(row_cont["Qtde_Contabil"].iloc[0]) if not row_cont.empty else 0
                                 regras = df_parametros[df_parametros["conta_contabil"] == conta_contabil]
                                 df_cont_detalhe = df_contabil[df_contabil["_Conta_Contabil"] == conta_contabil].copy()
 
                                 if regras.empty:
+                                    if valor_contabil == 0:
+                                        continue
                                     resultados.append(
                                         {
                                             "Conta Débito": conta_contabil,
@@ -1871,6 +1877,10 @@ if menu == "Dre":
 
                                     valor_cliente = round(df_cli_match["Valor_Tratado"].sum(), 2)
                                     qtde_cliente = int(len(df_cli_match))
+                                    if valor_contabil == 0 and valor_cliente == 0:
+                                        continue
+                                    if not grupo_contabil and not df_cli_match.empty and "_Nivel_3" in df_cli_match.columns:
+                                        grupo_contabil = normalizar_texto(df_cli_match["_Nivel_3"].iloc[0])
                                     diff = round(valor_contabil - valor_cliente, 2)
                                     diff_qtd = qtde_contabil - qtde_cliente
                                     status, motivo = classificar_diferenca(diff)
