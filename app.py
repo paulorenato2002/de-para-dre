@@ -1829,20 +1829,37 @@ if menu == "Dre":
                                 .rename(columns={"_Conta_Contabil": "Conta Débito"})
                             )
 
+                            mapa_conta_por_fornecedor = dict(
+                                zip(df_parametros["fornecedor_cliente"], df_parametros["conta_contabil"])
+                            )
+                            df_cliente_param = df_cliente.copy()
+                            df_cliente_param["_Conta_Contabil_Map"] = df_cliente_param["_Nivel_4_Norm"].map(mapa_conta_por_fornecedor)
+                            df_cliente_param = df_cliente_param[
+                                df_cliente_param["_Conta_Contabil_Map"].fillna("").astype(str).str.strip().ne("")
+                            ].copy()
+                            df_cli_grp = (
+                                df_cliente_param.groupby("_Conta_Contabil_Map")
+                                .agg(
+                                    Grupo_Cliente=("_Nivel_3", "first"),
+                                    Valor_Cliente=("Valor_Tratado", "sum"),
+                                    Qtde_Cliente=("_Conta_Contabil_Map", "size"),
+                                )
+                                .reset_index()
+                                .rename(columns={"_Conta_Contabil_Map": "Conta Débito"})
+                            )
+
                             resultados = []
                             detalhes_por_conta = {}
-                            docs_usados = []
                             contas_contabeis = df_cont_grp["Conta Débito"].astype(str).str.strip().tolist()
-                            contas_parametrizadas = (
-                                df_parametros["conta_contabil"].dropna().astype(str).map(normalizar_chave).tolist()
-                            )
+                            contas_cliente = df_cli_grp["Conta Débito"].astype(str).str.strip().tolist()
                             contas_para_conferir = list(contas_contabeis)
-                            for conta_parametrizada in contas_parametrizadas:
-                                if conta_parametrizada not in contas_para_conferir:
-                                    contas_para_conferir.append(conta_parametrizada)
+                            for conta_cliente in contas_cliente:
+                                if conta_cliente not in contas_para_conferir:
+                                    contas_para_conferir.append(conta_cliente)
 
                             for conta_contabil in contas_para_conferir:
                                 row_cont = df_cont_grp[df_cont_grp["Conta Débito"].astype(str).str.strip() == conta_contabil]
+                                row_cli = df_cli_grp[df_cli_grp["Conta Débito"].astype(str).str.strip() == conta_contabil]
                                 valor_contabil = round(float(row_cont["Valor_Contabil"].iloc[0]), 2) if not row_cont.empty else 0.0
                                 grupo_contabil = str(row_cont["Grupo_Contabil"].iloc[0]).strip() if not row_cont.empty else ""
                                 qtde_contabil = int(row_cont["Qtde_Contabil"].iloc[0]) if not row_cont.empty else 0
@@ -1871,16 +1888,16 @@ if menu == "Dre":
                                         "cliente": pd.DataFrame(),
                                     }
                                 else:
-                                    lista_fornecedores = set(regras["fornecedor_cliente"].tolist())
-                                    filtro_cli = df_cliente["_Nivel_4_Norm"].isin(lista_fornecedores)
-                                    df_cli_match = df_cliente[filtro_cli].copy()
+                                    df_cli_match = df_cliente_param[
+                                        df_cliente_param["_Conta_Contabil_Map"].astype(str).str.strip() == conta_contabil
+                                    ].copy()
 
-                                    valor_cliente = round(df_cli_match["Valor_Tratado"].sum(), 2)
-                                    qtde_cliente = int(len(df_cli_match))
+                                    valor_cliente = round(float(row_cli["Valor_Cliente"].iloc[0]), 2) if not row_cli.empty else 0.0
+                                    qtde_cliente = int(row_cli["Qtde_Cliente"].iloc[0]) if not row_cli.empty else 0
                                     if valor_contabil == 0 and valor_cliente == 0:
                                         continue
-                                    if not grupo_contabil and not df_cli_match.empty and "_Nivel_3" in df_cli_match.columns:
-                                        grupo_contabil = normalizar_texto(df_cli_match["_Nivel_3"].iloc[0])
+                                    if not grupo_contabil and not row_cli.empty:
+                                        grupo_contabil = normalizar_texto(row_cli["Grupo_Cliente"].iloc[0])
                                     diff = round(valor_contabil - valor_cliente, 2)
                                     diff_qtd = qtde_contabil - qtde_cliente
                                     status, motivo = classificar_diferenca(diff)
