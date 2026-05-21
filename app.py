@@ -2399,23 +2399,47 @@ elif menu == "Notas Fiscais":
                                 .rename(columns={"_Conta_Contabil": "Conta Débito"})
                             )
 
+                            mapa_conta_por_codigo = dict(
+                                zip(df_parametros["codigo_plano_04"], df_parametros["conta_contabil"])
+                            )
+                            df_documentos_param = df_documentos.copy()
+                            df_documentos_param["_Conta_Contabil_Map"] = df_documentos_param["_Nivel_4_Norm"].map(mapa_conta_por_codigo)
+                            df_documentos_param = df_documentos_param[
+                                df_documentos_param["_Conta_Contabil_Map"].fillna("").astype(str).str.strip().ne("")
+                            ].copy()
+                            df_docs_grp = (
+                                df_documentos_param.groupby("_Conta_Contabil_Map")
+                                .agg(
+                                    Grupo_Documentos=("_Nivel_4", "first"),
+                                    Valor_Documentos=("Valor_Tratado", "sum"),
+                                    Qtde_Documentos=("_Conta_Contabil_Map", "size"),
+                                )
+                                .reset_index()
+                                .rename(columns={"_Conta_Contabil_Map": "Conta Débito"})
+                            )
+
                             resultados = []
                             detalhes_por_conta = {}
                             docs_usados = []
+                            contas_contabeis = df_cont_grp["Conta Débito"].astype(str).str.strip().tolist()
+                            contas_documentos = df_docs_grp["Conta Débito"].astype(str).str.strip().tolist()
+                            contas_para_conferir = list(contas_contabeis)
+                            for conta_documentos in contas_documentos:
+                                if conta_documentos not in contas_para_conferir:
+                                    contas_para_conferir.append(conta_documentos)
 
-                            for _, row in df_cont_grp.iterrows():
-                                conta_contabil = str(row["Conta Débito"]).strip()
-                                valor_contabil = round(float(row["Valor_Contabil"]), 2)
-                                grupo_contabil = str(row["Grupo_Contabil"]).strip()
-                                qtde_contabil = int(row["Qtde_Contabil"])
-
-                                if valor_contabil == 0:
-                                    continue
-
+                            for conta_contabil in contas_para_conferir:
+                                row_cont = df_cont_grp[df_cont_grp["Conta Débito"].astype(str).str.strip() == conta_contabil]
+                                row_docs = df_docs_grp[df_docs_grp["Conta Débito"].astype(str).str.strip() == conta_contabil]
+                                valor_contabil = round(float(row_cont["Valor_Contabil"].iloc[0]), 2) if not row_cont.empty else 0.0
+                                grupo_contabil = str(row_cont["Grupo_Contabil"].iloc[0]).strip() if not row_cont.empty else ""
+                                qtde_contabil = int(row_cont["Qtde_Contabil"].iloc[0]) if not row_cont.empty else 0
                                 regras = df_parametros[df_parametros["conta_contabil"] == conta_contabil]
                                 df_cont_detalhe = df_contabil[df_contabil["_Conta_Contabil"] == conta_contabil].copy()
 
                                 if regras.empty:
+                                    if valor_contabil == 0:
+                                        continue
                                     resultados.append(
                                         {
                                             "Conta Débito": conta_contabil,
@@ -2431,12 +2455,17 @@ elif menu == "Notas Fiscais":
                                     )
                                     detalhes_por_conta[conta_contabil] = {"contabil": df_cont_detalhe, "documentos": pd.DataFrame()}
                                 else:
-                                    codigos_04 = set(regras["codigo_plano_04"].tolist())
-                                    df_docs_match = df_documentos[df_documentos["_Nivel_4_Norm"].isin(codigos_04)].copy()
+                                    df_docs_match = df_documentos_param[
+                                        df_documentos_param["_Conta_Contabil_Map"].astype(str).str.strip() == conta_contabil
+                                    ].copy()
                                     if not df_docs_match.empty:
                                         docs_usados.append(df_docs_match[["_Origem", "Valor_Tratado"]].copy())
-                                    valor_documentos = round(df_docs_match["Valor_Tratado"].sum(), 2)
-                                    qtde_documentos = int(len(df_docs_match))
+                                    valor_documentos = round(float(row_docs["Valor_Documentos"].iloc[0]), 2) if not row_docs.empty else 0.0
+                                    qtde_documentos = int(row_docs["Qtde_Documentos"].iloc[0]) if not row_docs.empty else 0
+                                    if valor_contabil == 0 and valor_documentos == 0:
+                                        continue
+                                    if not grupo_contabil and not row_docs.empty:
+                                        grupo_contabil = normalizar_texto(row_docs["Grupo_Documentos"].iloc[0])
                                     diff = round(valor_contabil - valor_documentos, 2)
                                     status, motivo = classificar_diferenca(diff)
 
