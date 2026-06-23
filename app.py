@@ -163,6 +163,150 @@ def aplicar_filtros_contabil(df, col_grupo_contabil, col_tipo_lan):
     return df_filtrado.copy()
 
 
+def identificar_coluna_periodo(df):
+    colunas_periodo = []
+    for coluna in df.columns:
+        texto = normalizar_texto(coluna)
+        if re.match(r"^\d{4}/\d{2}$", texto) or re.match(r"^\d{2}/\d{4}$", texto):
+            colunas_periodo.append(coluna)
+    return colunas_periodo[-1] if colunas_periodo else None
+
+
+def inferir_data_referencia_periodo(nome_coluna):
+    texto = normalizar_texto(nome_coluna)
+    match = re.match(r"^(?P<ano>\d{4})/(?P<mes>\d{2})$", texto)
+    if match is None:
+        match = re.match(r"^(?P<mes>\d{2})/(?P<ano>\d{4})$", texto)
+    if match is None:
+        return ""
+
+    try:
+        ano = int(match.group("ano"))
+        mes = int(match.group("mes"))
+        data = pd.Timestamp(year=ano, month=mes, day=1) + pd.offsets.MonthEnd(0)
+        return data.strftime("%d/%m/%Y")
+    except Exception:
+        return ""
+
+
+def preparar_base_contabil_dre(df_contabil):
+    df_contabil = limpar_colunas(df_contabil)
+
+    col_conta_contabil = obter_coluna_flexivel(df_contabil, ["codic", "codi_cta"])
+    col_grupo_contabil = obter_coluna_flexivel(df_contabil, ["nomec", "nome_cta"])
+    col_valor_contabil = obter_coluna_flexivel(df_contabil, ["valdeb", "totdeb"])
+    col_historico_contabil = obter_coluna_flexivel(df_contabil, ["historico_excel", "historico"])
+    col_tipo_lan_contabil = obter_coluna_flexivel(df_contabil, ["tipo_lan"])
+    col_tipo_conta_contabil = obter_coluna_flexivel(df_contabil, ["tipo_cta"])
+
+    faltantes = []
+    if not col_conta_contabil:
+        faltantes.append("codic/codi_cta")
+    if not col_grupo_contabil:
+        faltantes.append("nomec/nome_cta")
+    if not col_valor_contabil:
+        faltantes.append("valdeb/totdeb")
+    if faltantes:
+        raise ValueError("O arquivo contábil não tem as colunas esperadas: " + ", ".join(faltantes))
+
+    df_contabil["Valor_Tratado"] = df_contabil[col_valor_contabil].apply(tratar_valor)
+    df_contabil["_Conta_Contabil"] = df_contabil[col_conta_contabil].apply(normalizar_chave)
+    df_contabil["_Grupo_Contabil"] = df_contabil[col_grupo_contabil].apply(normalizar_texto)
+
+    if col_tipo_conta_contabil and col_tipo_conta_contabil in df_contabil.columns:
+        tipos_conta = df_contabil[col_tipo_conta_contabil].apply(normalizar_texto).str.upper()
+        df_contabil = df_contabil[tipos_conta.isin({"A", "ANALITICA", "ANALÍTICA"})].copy()
+
+    antes_contabil = len(df_contabil)
+    df_contabil = aplicar_filtros_contabil(df_contabil, col_grupo_contabil, col_tipo_lan_contabil)
+    removidos_contabil = antes_contabil - len(df_contabil)
+
+    if not col_historico_contabil:
+        col_historico_contabil = col_grupo_contabil
+
+    return (
+        df_contabil,
+        {
+            "col_conta_contabil": col_conta_contabil,
+            "col_grupo_contabil": col_grupo_contabil,
+            "col_valor_contabil": col_valor_contabil,
+            "col_historico_contabil": col_historico_contabil,
+            "col_tipo_lan_contabil": col_tipo_lan_contabil,
+            "removidos_contabil": removidos_contabil,
+        },
+    )
+
+
+def preparar_base_cliente_dre(df_cliente):
+    df_cliente = limpar_colunas(df_cliente)
+
+    col_plano_01_cliente = obter_coluna_flexivel(df_cliente, ["Plano de conta nº. 01", "Plano de conta no. 01"])
+    col_conta_cliente = obter_coluna_flexivel(
+        df_cliente,
+        ["Cód. Plano de conta nº. 04", "Cod. Plano de conta nº. 04", "Cód. Plano 04"],
+    )
+    col_nivel3_cliente = obter_coluna_flexivel(
+        df_cliente,
+        ["Plano de conta nº. 03", "Plano de conta no. 03"],
+    )
+    col_valor_cliente = obter_coluna_flexivel(df_cliente, ["Débito", "Debito"])
+    col_data_cliente = obter_coluna_flexivel(df_cliente, ["Dt. Movimento", "Data", "Data Movimento"])
+    col_descricao_cliente = obter_coluna_flexivel(df_cliente, ["Descrição", "Descricao"])
+    col_fornecedor_cliente = obter_coluna_flexivel(df_cliente, ["Cliente/Fornecedor"])
+
+    origem_resumida = False
+    col_periodo_cliente = None
+    if not col_valor_cliente:
+        col_periodo_cliente = identificar_coluna_periodo(df_cliente)
+        col_total_cliente = obter_coluna_flexivel(df_cliente, ["Total"])
+        if col_periodo_cliente:
+            col_valor_cliente = col_periodo_cliente
+            origem_resumida = True
+        elif col_total_cliente:
+            col_valor_cliente = col_total_cliente
+            origem_resumida = True
+
+    faltantes = []
+    if not col_conta_cliente:
+        faltantes.append("Cód. Plano de conta nº. 04")
+    if not col_nivel3_cliente:
+        faltantes.append("Plano de conta nº. 03")
+    if not col_valor_cliente:
+        faltantes.append("Débito/coluna de período/Total")
+    if faltantes:
+        raise ValueError("A planilha do cliente não tem as colunas esperadas: " + ", ".join(faltantes))
+
+    df_cliente = aplicar_filtros_cliente(df_cliente, col_plano_01_cliente, col_conta_cliente)
+    df_cliente["Valor_Tratado"] = df_cliente[col_valor_cliente].apply(tratar_valor)
+    df_cliente["_Nivel_3"] = df_cliente[col_nivel3_cliente].apply(normalizar_texto)
+    df_cliente["_Nivel_4"] = df_cliente[col_conta_cliente].apply(normalizar_texto)
+    df_cliente["_Nivel_4_Norm"] = df_cliente["_Nivel_4"].apply(normalizar_chave_relacionamento)
+    if col_fornecedor_cliente and col_fornecedor_cliente in df_cliente.columns:
+        df_cliente["_Fornecedor"] = df_cliente[col_fornecedor_cliente].apply(normalizar_texto)
+    else:
+        df_cliente["_Fornecedor"] = df_cliente["_Nivel_4"].apply(normalizar_texto)
+    if col_descricao_cliente and col_descricao_cliente in df_cliente.columns:
+        df_cliente["_Descricao"] = df_cliente[col_descricao_cliente].apply(normalizar_texto)
+
+    data_referencia = inferir_data_referencia_periodo(col_periodo_cliente) if origem_resumida else ""
+    if data_referencia:
+        df_cliente["_Data_Referencia"] = data_referencia
+
+    return (
+        df_cliente,
+        {
+            "col_plano_01_cliente": col_plano_01_cliente,
+            "col_conta_cliente": col_conta_cliente,
+            "col_nivel3_cliente": col_nivel3_cliente,
+            "col_valor_cliente": col_valor_cliente,
+            "col_data_cliente": col_data_cliente,
+            "col_descricao_cliente": col_descricao_cliente,
+            "col_fornecedor_cliente": col_fornecedor_cliente,
+            "origem_resumida": origem_resumida,
+        },
+    )
+
+
 def limpar_colunas(df):
     df = df.copy()
     df.columns = df.columns.astype(str).str.strip()
@@ -1294,7 +1438,11 @@ def montar_exportacao_contabil_dre(analise):
     df_export["Data"] = (
         df_export[col_data_cliente].apply(formatar_data_exportacao)
         if col_data_cliente and col_data_cliente in df_export.columns
-        else ""
+        else (
+            df_export["_Data_Referencia"].apply(formatar_data_exportacao)
+            if "_Data_Referencia" in df_export.columns
+            else ""
+        )
     )
     df_export["Crédito"] = ""
     df_export["Valor"] = df_export["Valor_Tratado"].apply(float)
@@ -1728,69 +1876,33 @@ if menu == "Dre":
     )
 
     with aba_comparativo_dre:
+        st.caption("Fluxo atual: use o DRE contábil no padrão DOM e o DRE da empresa no padrão atual do cliente.")
         col1, col2 = st.columns(2)
         with col1:
-            file_contabil = st.file_uploader("📂 Upload CONTÁBIL (.xlsx)", type=["xlsx", "xls"], key="contabil")
+            file_contabil = st.file_uploader("📂 Upload CONTÁBIL / DRE DOM (.xlsx)", type=["xlsx", "xls"], key="contabil")
         with col2:
-            file_cliente = st.file_uploader("📂 Upload CLIENTE / DRE (.xlsx)", type=["xlsx", "xls"], key="cliente")
+            file_cliente = st.file_uploader("📂 Upload CLIENTE / DRE EMPRESA (.xlsx)", type=["xlsx", "xls"], key="cliente")
 
         if file_contabil and file_cliente:
             if st.button("🚀 Iniciar Conferência", use_container_width=True, type="primary"):
                 with st.spinner("Lendo arquivos e cruzando com o banco de dados..."):
                     try:
-                        df_contabil = limpar_colunas(pd.read_excel(file_contabil, engine="openpyxl"))
-                        df_cliente = limpar_colunas(pd.read_excel(file_cliente, engine="openpyxl"))
+                        df_contabil_bruto = pd.read_excel(file_contabil, engine="openpyxl")
+                        df_cliente_bruto = pd.read_excel(file_cliente, engine="openpyxl")
 
-                        col_conta_contabil = obter_coluna(df_contabil, ["codic"])
-                        col_grupo_contabil = obter_coluna(df_contabil, ["nomec"])
-                        col_valor_contabil = obter_coluna(df_contabil, ["valdeb"])
-                        col_historico_contabil = obter_coluna(df_contabil, ["historico_excel", "historico"])
-                        col_tipo_lan_contabil = obter_coluna(df_contabil, ["tipo_lan"])
+                        df_contabil, meta_contabil = preparar_base_contabil_dre(df_contabil_bruto)
+                        df_cliente, meta_cliente = preparar_base_cliente_dre(df_cliente_bruto)
 
-                        col_plano_01_cliente = obter_coluna(df_cliente, ["Plano de conta nº. 01"])
-                        col_conta_cliente = obter_coluna(df_cliente, ["Cód. Plano de conta nº. 04"])
-                        col_nivel3_cliente = obter_coluna(df_cliente, ["Plano de conta nº. 03"])
-                        col_valor_cliente = obter_coluna(df_cliente, ["Débito"])
-                        col_data_cliente = obter_coluna(df_cliente, ["Dt. Movimento", "Data", "Data Movimento"])
-                        col_descricao_cliente = obter_coluna(df_cliente, ["Descrição"])
-                        col_fornecedor_cliente = obter_coluna(df_cliente, ["Cliente/Fornecedor"])
-
-                        faltantes = []
-                        if not col_conta_contabil:
-                            faltantes.append("codic")
-                        if not col_grupo_contabil:
-                            faltantes.append("nomec")
-                        if not col_valor_contabil:
-                            faltantes.append("valdeb")
-                        if not col_conta_cliente:
-                            faltantes.append("Cód. Plano de conta nº. 04")
-                        if not col_nivel3_cliente:
-                            faltantes.append("Plano de conta nº. 03")
-                        if not col_valor_cliente:
-                            faltantes.append("Débito")
-
-                        if faltantes:
-                            raise ValueError(
-                                "As planilhas enviadas não têm as colunas esperadas: " + ", ".join(faltantes)
-                            )
-
-                        df_contabil["Valor_Tratado"] = df_contabil[col_valor_contabil].apply(tratar_valor)
-                        df_contabil["_Conta_Contabil"] = df_contabil[col_conta_contabil].apply(normalizar_chave)
-                        df_contabil["_Grupo_Contabil"] = df_contabil[col_grupo_contabil].apply(normalizar_texto)
-
-                        df_cliente["Valor_Tratado"] = df_cliente[col_valor_cliente].apply(tratar_valor)
-                        df_cliente["_Nivel_3"] = df_cliente[col_nivel3_cliente].apply(normalizar_texto)
-                        df_cliente["_Nivel_4"] = df_cliente[col_conta_cliente].apply(normalizar_texto)
-                        df_cliente["_Nivel_4_Norm"] = df_cliente["_Nivel_4"].apply(normalizar_chave_relacionamento)
-                        if col_fornecedor_cliente:
-                            df_cliente["_Fornecedor"] = df_cliente[col_fornecedor_cliente].apply(normalizar_texto)
-
-                        antes_contabil = len(df_contabil)
-                        antes_cliente = len(df_cliente)
-                        df_contabil = aplicar_filtros_contabil(df_contabil, col_grupo_contabil, col_tipo_lan_contabil)
-                        df_cliente = aplicar_filtros_cliente(df_cliente, col_plano_01_cliente, col_conta_cliente)
-                        removidos_contabil = antes_contabil - len(df_contabil)
-                        removidos_cliente = antes_cliente - len(df_cliente)
+                        col_conta_contabil = meta_contabil["col_conta_contabil"]
+                        col_grupo_contabil = meta_contabil["col_grupo_contabil"]
+                        col_historico_contabil = meta_contabil["col_historico_contabil"]
+                        col_conta_cliente = meta_cliente["col_conta_cliente"]
+                        col_nivel3_cliente = meta_cliente["col_nivel3_cliente"]
+                        col_data_cliente = meta_cliente["col_data_cliente"]
+                        col_descricao_cliente = meta_cliente["col_descricao_cliente"]
+                        col_fornecedor_cliente = meta_cliente["col_fornecedor_cliente"]
+                        removidos_contabil = meta_contabil["removidos_contabil"]
+                        removidos_cliente = max(len(df_cliente_bruto) - len(df_cliente), 0)
                         if removidos_contabil or removidos_cliente:
                             st.info(
                                 f"Linhas desconsideradas nesta análise: {removidos_contabil} no contábil e {removidos_cliente} no cliente."
@@ -1959,12 +2071,12 @@ if menu == "Dre":
 
     with aba_parametrizacao_dre:
         st.subheader("Parametrização")
-        st.caption("Aqui você consulta o que já foi parametrizado e identifica o que ainda falta vincular no cliente.")
+        st.caption("Aqui você consulta o que já foi parametrizado e identifica o que ainda falta vincular no DRE atual do cliente.")
 
         df_banco = carregar_parametrizacao_empresa(empresa_selecionada)
 
         st.subheader("Consulta de Parametrização")
-        st.caption("Conta Débito do contábil x Cód. Plano de conta nº. 04 do cliente.")
+        st.caption("Conta contábil do DRE DOM x Cód. Plano de conta nº. 04 do DRE da empresa.")
 
         filtro_consulta = st.text_input("Buscar na parametrização", placeholder="Digite conta débito ou código do cliente...")
         if filtro_consulta:
@@ -2134,8 +2246,8 @@ if menu == "Dre":
                     st.error(f"Erro ao importar parametrização em lote do DRE: {e}")
 
         st.markdown("---")
-        st.subheader("Fornecedores sem parametrização")
-        st.caption("Lista automática dos lançamentos do cliente que ainda não têm de/para cadastrado.")
+        st.subheader("Planos nível 04 sem parametrização")
+        st.caption("Lista automática dos planos do DRE da empresa que ainda não têm de/para cadastrado.")
 
         fonte_cliente = st.session_state.get("analise_conciliacao", {}).get("df_cliente")
         col_nivel3_cliente = st.session_state.get("analise_conciliacao", {}).get("col_nivel3_cliente")
@@ -2145,29 +2257,23 @@ if menu == "Dre":
 
         if fonte_cliente is None or fonte_cliente.empty:
             st.info(
-                "Para listar os fornecedores sem parametrização, carregue uma base do cliente abaixo ou rode uma conciliação primeiro."
+                "Para listar os planos sem parametrização, carregue uma base do cliente abaixo ou rode uma conciliação primeiro."
             )
             arquivo_cliente_consulta = st.file_uploader(
-                "📂 Upload CLIENTE / DRE para consulta",
+                "📂 Upload CLIENTE / DRE EMPRESA para consulta",
                 type=["xlsx", "xls"],
                 key="cliente_consulta_parametrizacao",
             )
             if arquivo_cliente_consulta:
-                fonte_cliente = limpar_colunas(pd.read_excel(arquivo_cliente_consulta, engine="openpyxl"))
-                col_plano_01_cliente = obter_coluna(fonte_cliente, ["Plano de conta nº. 01"])
-                col_nivel3_cliente = obter_coluna(fonte_cliente, ["Plano de conta nº. 03"])
-                col_conta_cliente = obter_coluna(fonte_cliente, ["Cód. Plano de conta nº. 04"])
-                col_fornecedor_cliente = obter_coluna(fonte_cliente, ["Cliente/Fornecedor"])
-                col_descricao_cliente = obter_coluna(fonte_cliente, ["Descrição"])
-                col_valor_cliente = obter_coluna(fonte_cliente, ["Débito"])
-                if col_nivel3_cliente and col_conta_cliente and col_valor_cliente:
-                    fonte_cliente = aplicar_filtros_cliente(fonte_cliente, col_plano_01_cliente, col_conta_cliente)
-                    fonte_cliente["Valor_Tratado"] = fonte_cliente[col_valor_cliente].apply(tratar_valor)
-                    fonte_cliente["_Nivel_3"] = fonte_cliente[col_nivel3_cliente].apply(normalizar_texto)
-                    fonte_cliente["_Nivel_4"] = fonte_cliente[col_conta_cliente].apply(normalizar_texto)
-                    if col_fornecedor_cliente:
-                        fonte_cliente["_Fornecedor"] = fonte_cliente[col_fornecedor_cliente].apply(normalizar_texto)
-                else:
+                try:
+                    fonte_cliente, meta_cliente_consulta = preparar_base_cliente_dre(
+                        pd.read_excel(arquivo_cliente_consulta, engine="openpyxl")
+                    )
+                    col_nivel3_cliente = meta_cliente_consulta["col_nivel3_cliente"]
+                    col_conta_cliente = meta_cliente_consulta["col_conta_cliente"]
+                    col_fornecedor_cliente = meta_cliente_consulta["col_fornecedor_cliente"]
+                    col_descricao_cliente = meta_cliente_consulta["col_descricao_cliente"]
+                except Exception:
                     st.warning("A base enviada não tem as colunas mínimas esperadas para consulta.")
 
         if fonte_cliente is not None and not fonte_cliente.empty and col_nivel3_cliente and col_conta_cliente:
@@ -2181,10 +2287,10 @@ if menu == "Dre":
             )
 
             if df_pendencias.empty:
-                st.success("Todas as contas/fornecedores dessa base já estão parametrizados.")
+                st.success("Todos os planos nível 04 dessa base já estão parametrizados.")
             else:
                 st.subheader("Montar parametrização das pendências")
-                st.caption("Preencha a conta débito nas linhas pendentes e salve para criar os vínculos no banco.")
+                st.caption("Preencha a conta contábil nas linhas pendentes e salve para criar os vínculos no banco.")
 
                 df_edicao = df_pendencias.copy()
                 df_edicao.insert(0, "CONTA DÉBITO", "")
