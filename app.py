@@ -135,6 +135,7 @@ def aplicar_filtros_cliente(df, col_plano_01, col_nivel4):
         excluidos_nivel4 = {
             normalizar_chave_relacionamento("2.07.019.003 - TAXA BANCARIA BOLETOS"),
             normalizar_chave_relacionamento("3.02.002.001 - JUROS DE MORA"),
+            normalizar_chave_relacionamento("Total"),
         }
         nivel4_norm = df_filtrado[col_nivel4].apply(normalizar_chave_relacionamento)
         df_filtrado = df_filtrado[~nivel4_norm.isin(excluidos_nivel4)]
@@ -281,6 +282,12 @@ def preparar_base_cliente_dre(df_cliente):
     df_cliente["_Nivel_3"] = df_cliente[col_nivel3_cliente].apply(normalizar_texto)
     df_cliente["_Nivel_4"] = df_cliente[col_conta_cliente].apply(normalizar_texto)
     df_cliente["_Nivel_4_Norm"] = df_cliente["_Nivel_4"].apply(normalizar_chave_relacionamento)
+    df_cliente = df_cliente[
+        df_cliente["_Nivel_3"].str.strip().ne("")
+        & df_cliente["_Nivel_4"].str.strip().ne("")
+        & df_cliente["_Nivel_3"].str.strip().str.upper().ne("TOTAL")
+        & df_cliente["_Nivel_4"].str.strip().str.upper().ne("TOTAL")
+    ].copy()
     if col_fornecedor_cliente and col_fornecedor_cliente in df_cliente.columns:
         df_cliente["_Fornecedor"] = df_cliente[col_fornecedor_cliente].apply(normalizar_texto)
     else:
@@ -465,21 +472,21 @@ def preparar_detalhe_contabil(df_cont_detalhe, col_conta_contabil, col_grupo_con
 
 def preparar_detalhe_cliente(df_cli_detalhe, col_fornecedor_cliente, total_ok):
     if df_cli_detalhe.empty:
-        return pd.DataFrame(columns=["CÓD. PLANO 04", "FORNECEDOR", "VALOR", "STATUS"])
+        return pd.DataFrame(columns=["CÓD. PLANO 04", "DETALHE CLIENTE", "VALOR", "STATUS"])
 
     df = df_cli_detalhe.copy()
     df["CÓD. PLANO 04"] = df["_Nivel_4"].apply(normalizar_texto)
     if col_fornecedor_cliente and col_fornecedor_cliente in df.columns:
-        df["FORNECEDOR"] = df[col_fornecedor_cliente].apply(normalizar_texto)
+        df["DETALHE CLIENTE"] = df[col_fornecedor_cliente].apply(normalizar_texto)
     else:
-        df["FORNECEDOR"] = df["_Nivel_4"].apply(normalizar_texto)
+        df["DETALHE CLIENTE"] = df["_Nivel_3"].apply(normalizar_texto)
     df["VALOR"] = df["Valor_Tratado"].apply(float)
     df["STATUS"] = "Encontrado" if total_ok else "Revisar"
 
     df = (
-        df.groupby(["CÓD. PLANO 04", "FORNECEDOR"], dropna=False, as_index=False)
+        df.groupby(["CÓD. PLANO 04", "DETALHE CLIENTE"], dropna=False, as_index=False)
         .agg({"VALOR": "sum", "STATUS": "first"})
-        .sort_values(["VALOR", "CÓD. PLANO 04", "FORNECEDOR"], ascending=[False, True, True])
+        .sort_values(["VALOR", "CÓD. PLANO 04", "DETALHE CLIENTE"], ascending=[False, True, True])
     )
     return df
 
@@ -497,7 +504,7 @@ def montar_quadro_lado_a_lado(df_cont, df_cli):
             "CONTABIL - VALOR": df_cont["VALOR"] if "VALOR" in df_cont.columns else [0.0] * max_len,
             "CONTABIL - STATUS": df_cont["STATUS"] if "STATUS" in df_cont.columns else [""] * max_len,
             "CLIENTE - CÓD. PLANO 04": df_cli["CÓD. PLANO 04"] if "CÓD. PLANO 04" in df_cli.columns else [""] * max_len,
-            "CLIENTE - FORNECEDOR": df_cli["FORNECEDOR"] if "FORNECEDOR" in df_cli.columns else [""] * max_len,
+            "CLIENTE - DETALHE": df_cli["DETALHE CLIENTE"] if "DETALHE CLIENTE" in df_cli.columns else [""] * max_len,
             "CLIENTE - VALOR": df_cli["VALOR"] if "VALOR" in df_cli.columns else [0.0] * max_len,
             "CLIENTE - STATUS": df_cli["STATUS"] if "STATUS" in df_cli.columns else [""] * max_len,
         }
